@@ -158,7 +158,7 @@ Tip: Think about how you would invoke he job if local, then create the syntax us
 When a Job is added ( either pulled from a broker, or pushed via producer) the job is first added to a persistent database, then added to a gloabal queue to be run by workers monitoring the queue. 
 
 ## Producers
-See [Producers]() - to review how to create jobs.
+See [Producers](https://github.com/codemation/easyjobs/tree/main/easyjobs/producers) - to review how to create jobs.
 
 ## Terminology
 
