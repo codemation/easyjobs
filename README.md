@@ -38,7 +38,7 @@ A jobs framework for managing and  distributing  async / non-async tasks
             broker_path='amqp://guest:guest@127.0.0.1/'
         )
 
-        @job_manager.task
+        @job_manager.task()
         async def basic_job(arg1, arg2, arg3, *args):
             print(f"basic_job: {arg1} {arg2} {arg3} - args {args}")
             await asyncio.sleep(2)
@@ -64,7 +64,7 @@ A jobs framework for managing and  distributing  async / non-async tasks
             server_secret='abcd1234'
         )
 
-        @job_manager.task
+        @job_manager.task()
         async def basic_job(arg1, arg2, arg3, *args):
             print(f"basic_job: {arg1} {arg2} {arg3} - args {args}")
             await asyncio.sleep(2)
@@ -98,7 +98,7 @@ Start Job Manager
             task_workers=3
         )
 
-        @worker.task
+        @worker.task()
         async def work_a(a, b, c):
             await asyncio.sleep(5)
             return {'result': [a, b, c]}
@@ -120,6 +120,8 @@ Tasks can be registered on a Manager or Worker by using referencing the <instanc
 - retry_policy - Defaults retry_policy='retry_once',  with possible values [retry_always, never]
 - run_after - Defaults Unspecified - Will create job with run_after=<task_name> using results of current task as argument for run_afer task.
 <br>
+
+Examples
 
     @worker.task(namespace='finance')
     async def finance_work(employee_id: str, employee_data: dict):
