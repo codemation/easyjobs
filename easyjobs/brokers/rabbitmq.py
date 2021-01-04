@@ -17,17 +17,15 @@ async def rabbitmq_message_generator(
         queue = await channel.declare_queue(queue_name, auto_delete=True)
         while True:
             try:
-
                 async with queue.iterator() as queue_iter:
                     async for message in queue_iter:
                         async with message.process():
                             print(message.body)
-                            status = yield message.body
+                            status = yield message.body.decode()
                             if status == 'finished':
                                 raise asyncio.CancelledError(f"rabbitmq finished")
-
-                            if queue.name in message.body.decode():
-                                break
+                            #if queue.name in message.body.decode():
+                            #    break
             except Exception as e:
                 if isinstance(e, asyncio.CancelledError):
                     break
