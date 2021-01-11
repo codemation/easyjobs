@@ -121,9 +121,9 @@ class EasyJobsWorker:
                     'on_failure': on_failure,
                     'run_after': run_after
                 }
-                self.log.warning(f"new_job: {new_job}")
+                self.log.debug(f"new_job: {new_job}")
                 await self.new_job_queue.put(new_job)
-                self.log.warning(f"added new job {new_job['name']} to job_sender queue")
+                self.log.debug(f"added new job {new_job['name']} to job_sender queue")
                 return job_id
             if subprocess:
                 REQUIRED_ENV_VARS = {'WORKER_TASK_DIR'}
@@ -204,7 +204,7 @@ class EasyJobsWorker:
 
     async def add_task_subprocess_results(self, request_id, results):
         await self.task_subprocess_results[request_id].put(results)
-        self.log.warning(f"added {request_id} results")
+        self.log.debug(f"added {request_id} results")
         return f"added {request_id} results"
 
     async def task_subprocess_callback(self, request_id):
@@ -260,7 +260,7 @@ class EasyJobsWorker:
     def get_local_worker_task(self, queue, task_name, task_type):
         worker_id = '_'.join(self.rpc_proxy.session_id.split('-'))
         local_funcs = self.rpc_server[f'local_{queue}']
-        self.log.warning(f"get_local_worker_task - local_funcs: {local_funcs}")
+        self.log.debug(f"get_local_worker_task - local_funcs: {local_funcs}")
         return local_funcs.get(f'{task_name}_{worker_id}_{task_type}')
 
     def get_random_worker_task(self, queue, task_name, task_type):
@@ -286,11 +286,11 @@ class EasyJobsWorker:
         local_func = self.get_local_worker_task(queue, name, 'task')
         
         if not local_func is None:
-            self.log.warning(f"run_task - using local_func {local_func}")
+            self.log.debug(f"run_task - using local_func {local_func}")
             results = local_func(*args['args'], **kwargs)
         else:
             global_func = self.get_random_worker_task(queue, name, 'task')
-            self.log.warning(f"run_task - using global_func {global_func}")
+            self.log.debug(f"run_task - using global_func {global_func}")
             if not type(global_func) == list:
                 results = global_func(*args['args'], **kwargs)
 
@@ -310,7 +310,7 @@ class EasyJobsWorker:
                 job = await self.new_job_queue.get()
                 queue = job['namespace']
                 await self.add_job_to_queue(queue, job)
-                self.log.warning(f"job_sender - added job {job['name']} to job_manager queue")
+                self.log.debug(f"job_sender - added job {job['name']} to job_manager queue")
             except Exception as e:
                 if isinstance(e, asyncio.CancelledError):
                     break
@@ -322,6 +322,12 @@ class EasyJobsWorker:
         while True:
             try:
                 job = await self.get_job_from_queue(queue)
+                if not isinstance(job, dict):
+                    if 'KeyError' in job and queue in job:
+                        self.log.warning(f"worker queue empty - sleeping (2) sec")
+                        await asyncio.sleep(2)
+                        continue
+                    raise Exception(job)
                 if 'queue_empty' in job:
                     self.log.warning(f"worker queue empty - sleeping (2) sec")
                     await asyncio.sleep(2)
@@ -333,7 +339,7 @@ class EasyJobsWorker:
                 await self.update_job_status(
                     job_id, 'running', self.rpc_server.server_id
                 )
-                self.log.warning(f"worker running job: {job}")
+                self.log.debug(f"worker running job: {job}")
                 # start job
                 name, args, kwargs = job['name'], job['args'], job['kwargs']
 
@@ -346,7 +352,7 @@ class EasyJobsWorker:
                             break
                         continue
                 
-                self.log.warning(f"worker - results: {results}")
+                self.log.debug(f"worker - results: {results}")
 
                 if results == f'task {name} failed':
                     if job['on_failure']: 
