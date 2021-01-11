@@ -162,12 +162,12 @@ Subprocess Usage: subprocess=True definitions via @worker.task() require a 'WORK
     from easyjobs.workers.task import subprocess
 
     @subprocess
-    def work(*args, **kwargs):
+    def work(a, b, c):
         """
         insert blocking / non-blocking work here
         """
         time.sleep(5) # Blocking
-        return {'args': list(args), 'kwargs': kwargs, 'result': 'I slept for 5 seconds - blocking'}
+        return {'result': 'I slept for 5 seconds - blocking with {a} {b} {c}'}
         
     if __name__ == '__main__':
         work()
