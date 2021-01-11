@@ -253,7 +253,7 @@ class EasyJobsManager():
             try:
                 job = await message_generator.asend(None)
                 if job and 'job' in job:
-                    self.log.warning(f"message_consumer pulled {job}")
+                    self.log.debug(f"message_consumer pulled {job}")
                     job = json.loads(job)['job']
                     self.log.debug(f"message_consumer - job: {job}")
 
@@ -267,7 +267,7 @@ class EasyJobsManager():
                     result = await self.run_job(
                         queue, job['name'], args=job['args']['args'], kwargs=job['kwargs']
                     )
-                    self.log.warning(f"message_consumer run_job result: {result}")
+                    self.log.debug(f"message_consumer run_job result: {result}")
             except Exception as e:
                 if isinstance(e, asyncio.CancelledError):
                     break
@@ -279,23 +279,30 @@ class EasyJobsManager():
     
     def get_local_worker_task(self, queue, task_name, task_type):
         worker_id = '_'.join(self.rpc_server.server_id.split('-'))
-        local_funcs = self.rpc_server[f'local_{queue}']
-        self.log.warning(f"get_local_worker_task - local_funcs: {local_funcs}")
+        try:
+            local_funcs = self.rpc_server[f'local_{queue}']
+            self.log.debug(f"get_local_worker_task - local_funcs: {local_funcs}")
+        except IndexError:
+            return None
         return local_funcs.get(f'{task_name}_{worker_id}_{task_type}')
 
     def get_random_worker_task(self, queue, task_name, task_type):
-        global_funcs = self.rpc_server[f'{queue}']
+        
         worker_funcs = []
-        for func in global_funcs:
-            if task_name in func and task_type in func:
-                worker_funcs.append(global_funcs[func])
-        if worker_funcs:
-            return random.choice(worker_funcs)
-        return worker_funcs
+        try:
+            global_funcs = self.rpc_server[f'{queue}']
+            for func in global_funcs:
+                if task_name in func and task_type in func:
+                    worker_funcs.append(global_funcs[func])
+            if worker_funcs:
+                return random.choice(worker_funcs)
+            return worker_funcs
+        except IndexError:
+            return worker_funcs
 
     async def add_task_subprocess_results(self, request_id, results):
         await self.task_subprocess_results[request_id].put(results)
-        self.log.warning(f"added {request_id} results")
+        self.log.debug(f"added {request_id} results")
         return f"added {request_id} results"
 
     async def task_subprocess_callback(self, request_id, worker_id):
@@ -362,7 +369,7 @@ class EasyJobsManager():
                     'on_failure': on_failure,
                     'run_after': run_after
                 }
-                self.log.warning(f"new_job: {new_job}")
+                self.log.debug(f"new_job: {new_job}")
                 await self.new_job_queue.put(new_job)
                 return job_id
 
@@ -383,7 +390,7 @@ class EasyJobsManager():
                     )
                 async def task(*args, **kwargs):
                     request_id = str(uuid.uuid1())
-                    self.log.warning(f"task started - subprocess - for {func_name}")
+                    self.log.debug(f"task started - subprocess - for {func_name}")
                     self.task_subprocess_results[request_id] = asyncio.Queue()
  
                     # start task_subprocess
@@ -408,7 +415,7 @@ class EasyJobsManager():
                             return f'task {func_name} failed'
             else:
                 async def task(*args, **kwargs):
-                    self.log.warning(f"task started - normal - for {func_name}")
+                    self.log.debug(f"task started - normal - for {func_name}")
                     try:
                         result = func(*args, **kwargs)
                         if isinstance(result, Coroutine):
@@ -504,11 +511,11 @@ class EasyJobsManager():
         local_func = self.get_local_worker_task(queue, name, 'task')
         
         if not local_func is None:
-            self.log.warning(f"run_task - using local_func {local_func}")
+            self.log.debug(f"run_task - using local_func {local_func}")
             results = local_func(*args['args'], **kwargs)
         else:
             global_func = self.get_random_worker_task(queue, name, 'task')
-            self.log.warning(f"run_task - using global_func {global_func}")
+            self.log.debug(f"run_task - using global_func {global_func}")
             if not type(global_func) == list:
                 results = global_func(*args['args'], **kwargs)
 
@@ -526,7 +533,7 @@ class EasyJobsManager():
         while True:
             try:
                 job = await self.new_job_queue.get()
-                self.log.warning(f"job_sender: job {job}")
+                self.log.debug(f"job_sender: job {job}")
                 queue = job['namespace']
                 await self.add_job(job)
             except Exception as e:
