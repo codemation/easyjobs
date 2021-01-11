@@ -1,7 +1,8 @@
 import asyncio
-import uuid
+import uuid, os, json
 import logging
 import random
+import subprocess as sp
 from easyrpc.server import EasyRpcServer
 from easyrpc.register import Coroutine
 from fastapi import FastAPI
@@ -24,6 +25,11 @@ class EasyJobsWorker:
 
         # queue of jobs to be sent to job_manager
         self.new_job_queue = asyncio.Queue()
+
+        self.task_subprocess_results = {}
+        
+        self.task_callback_results = {}
+
 
     @classmethod
     async def create(
@@ -65,7 +71,17 @@ class EasyJobsWorker:
         )
         await asyncio.sleep(2)
 
+        worker_id = '_'.join(rpc_proxy.session_id.split('-'))
+
         await rpc_server['manager']['add_worker_to_pool'](rpc_proxy.session_id)
+
+        
+        async def add_task_subprocess_results(request_id, results):
+            return await jobs_worker.add_task_subprocess_results(request_id, results)
+        
+        add_task_subprocess_results.__name__ = f'add_task_subprocess_results_{worker_id}'
+        rpc_server.origin(add_task_subprocess_results, namespace='manager')
+
 
         jobs_worker = cls(
             rpc_server,
@@ -82,7 +98,8 @@ class EasyJobsWorker:
         namespace: str = 'DEFAULT',
         on_failure: str =  None, # on failure job
         retry_policy: str =  'retry_once', # retry_once, retry_always, never
-        run_after: str = None
+        run_after: str = None,
+        subprocess: bool = False,
     ):
 
         worker_id = '_'.join(self.rpc_proxy.session_id.split('-'))
@@ -108,19 +125,57 @@ class EasyJobsWorker:
                 await self.new_job_queue.put(new_job)
                 self.log.warning(f"added new job {new_job['name']} to job_sender queue")
                 return job_id
+            if subprocess:
+                REQUIRED_ENV_VARS = {'WORKER_TASK_DIR'}
+                for var in REQUIRED_ENV_VARS:
+                    if os.environ.get(var) is None:
+                        raise Exception(f"missing env var {var} - required to use ")
+
+                WORKER_TASK_DIR = os.environ.get('WORKER_TASK_DIR')
+
+                if not os.system(f"ls {WORKER_TASK_DIR}/{func_name}.py") == 0:
+                    template_location = 'https://github.com/codemation/easyjobs/tree/main/easyjobs/workers'
+                    raise Exception(
+                        f"missing expected {WORKER_TASK_DIR}/{func_name}.py task_subprocess file, create using template located here: {template_location}"
+                    )
+                async def task(*args, **kwargs):
+                    request_id = str(uuid.uuid1())
+                    self.task_subprocess_results[request_id] = asyncio.Queue()
+ 
+                    # start task_subprocess
+                    arguments = json.dumps({'args': list(args), 'kwargs': kwargs})
+                    p = sp.Popen(
+                        [
+                            'python', 
+                            f'{WORKER_TASK_DIR}/{func_name}.py',
+                            self.rpc_proxy.origin_host,
+                            str(self.rpc_proxy.origin_port),
+                            self.rpc_proxy.origin_path,
+                            self.rpc_proxy.server_secret,
+                            request_id,
+                            arguments
+                        ]
+                    )
+                    # create_task_subprocess_callback - use 
+                    await self.create_task_subprocess_callback(request_id, worker_id)
+
+                    try:
+                        return await self.task_subprocess_callback(request_id)
+                    except Exception as e:
+                        if not isinstance(e, asyncio.CancelledError):
+                            return f'task {func_name} failed'
+            else:
+                async def task(*args, **kwargs):
+                    try:
+                        result = func(*args, **kwargs)
+                        if isinstance(result, Coroutine):
+                            result = await result
+                        return result
+                    except Exception as e:
+                        if not isinstance(e, asyncio.CancelledError):
+                            self.log.exception(f"exception running {func_name}")
+                            return f'task {func_name} failed'
             
-            async def task(*args, **kwargs):
-                try:
-                    result = func(*args, **kwargs)
-                    if isinstance(result, Coroutine):
-                        result = await result
-                    return result
-                except Exception as e:
-                    if not isinstance(e, asyncio.CancelledError):
-                        self.log.exception(f"exception running {func_name}")
-                        return f'task {func_name} failed'
-                        
-                
             job.__name__ = f'{func_name}_{worker_id}_job'
             
             self.rpc_server.origin(job, namespace=namespace)
@@ -134,7 +189,34 @@ class EasyJobsWorker:
 
             return job
         return job_register
+    async def add_task_callback_result(self, request_id, results):
+        """
+        when task is triggered, callback id is issued to requestor 
+        this id can be used to monitor the associated task_callback_results
+        queue for results
+        """
+        await self.task_callback_results[request_id].put(results)
+        return f"{request_id} results added"
+    
 
+    async def create_task_subprocess_callback(self, request_id, worker_id):
+        return await self.rpc_server['manager']['create_task_subprocess_callback'](request_id, worker_id)        
+
+    async def add_task_subprocess_results(self, request_id, results):
+        await self.task_subprocess_results[request_id].put(results)
+        self.log.warning(f"added {request_id} results")
+        return f"added {request_id} results"
+
+    async def task_subprocess_callback(self, request_id):
+        """
+        waits on a task_subprocess to complete then sendsresults
+        """
+        try:
+            return await self.task_subprocess_results[request_id].get()
+        except Exception as e:
+            if not isinstance(e, asyncio.CancelledError):
+                self.log.exception(f"error with task_subprocess_callback for request_id: {request_id}")
+                
     async def add_task(self, queue, task_name):
         return await self.rpc_server['manager']['add_task'](queue, task_name)
 
@@ -239,7 +321,6 @@ class EasyJobsWorker:
         self.log.warning(f"worker started - for queue {queue}")
         while True:
             try:
-                #job = await self.job_queues[queue].get()
                 job = await self.get_job_from_queue(queue)
                 if 'queue_empty' in job:
                     self.log.warning(f"worker queue empty - sleeping (2) sec")
@@ -294,8 +375,7 @@ class EasyJobsWorker:
                     else:
                         await self.run_job(queue, job['run_after'], kwargs=results)              
             except Exception as e:
-                #if isinstance(e, asyncio.CancelledError):
-                #    break
+                if isinstance(e, asyncio.CancelledError):
+                    break
                 self.log.exception(f"error in worker")
-                break
         self.log.warning(f"worker exiting")
