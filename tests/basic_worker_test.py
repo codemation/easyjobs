@@ -1,3 +1,4 @@
+import os, time
 import asyncio
 from fastapi import FastAPI
 from easyjobs.workers.worker import EasyJobsWorker
@@ -39,3 +40,12 @@ async def setup():
     async def failure_notify(job_failed):
         worker.log.error(job_failed)
         return job_failed
+
+    # 'WORKER_PORT', 'WORKER_PATH', 'WORKER_TASK_DIR'
+    os.environ['WORKER_PORT'] = '8221'
+    os.environ['WORKER_PATH'] = '/ws/jobs'
+    os.environ['WORKER_TASK_DIR'] = '/home/tso/Documents/python/easyjobs/easyjobs/'
+
+    @worker.task(subprocess=True)
+    async def basic_blocking(a, b, c):
+        pass
