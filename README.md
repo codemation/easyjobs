@@ -193,6 +193,34 @@ When a Job is added ( either pulled from a broker, or pushed via producer) the j
 ## Producers
 See [Producers](https://github.com/codemation/easyjobs/tree/main/easyjobs/producers) - to review how to create jobs.
 
+## Job Life Cycle
+1. A Job is created if pulled from a Message Queue or directly added via a job_proxy producer to a EasyJobsManager. 
+2. The Job is added to a Jobs Database queued for worker consumtion. 
+3. A Job is selected by a worker and invoked with the provided arg / kwargs parameters( if any ).
+4. Job Failures result in triggering a retry followed by any task on_failure tasks ( if any ), then reported as failed to EasyJobsManager's results database / queue.
+5. Job Successes result in creating any task run_after tasks using the results of the last job, then reporting the results to EasyJobsManager's results database / queue.
+6. Results are stored within the EasyJobsManager Queue 
+
+## Consuming Results
+When a Job is created via a jobs_proxy producer, a job_id is returned immedietly. This job_id can be used to pull later or awaited right away( this does NOT make the job start sooner ).
+
+    
+    # results_consumer.py
+    import asyncio
+    from easyrpc.proxy import EasyRpcProxy
+    
+    async def get_results(job_id):
+        results_proxy = await EasyRpcProxy.create(
+            '0.0.0.0',  # EasyJobsManager Host / IP
+            '8220',     # EasyJobsManager Port
+            '/ws/manager',
+            server_secret='abcd1234',
+            namespace='job_results'
+        )
+        return await results_proxy['get_job_result'](job_id)
+    
+
+
 ## Terminology
 
 ### EasyJobsManager
