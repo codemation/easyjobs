@@ -114,9 +114,10 @@ class EasyJobsManager():
             broker_type,
             broker_path
         )
-        # load existing jobs before returning
+        # load existing jobs/results before returning
         await job_manager.broker_setup()
         await job_manager.load_job_queues()
+        await job_manager.load_results_queue()
 
         @rpc_server.origin(namespace='manager')
         async def add_job_to_queue(queue: str, job: dict):
@@ -162,6 +163,7 @@ class EasyJobsManager():
         async def get_job_from_queue(queue):
             return await job_manager.get_job_from_queue_nowait(queue)
             
+        @rpc_server.origin(namespace='job_results')
         @rpc_server.origin(namespace='manager')
         async def get_job_result(job_id):
             return await job_manager.get_job_result(job_id)
@@ -360,7 +362,7 @@ class EasyJobsManager():
             async def job(*args, **kwargs):
                 job_id = str(uuid.uuid1())
                 new_job = {
-                    'job_id': job_id,
+                    'job_id': load_job_queuesjob_id,
                     'namespace': namespace,
                     'name': func_name,
                     'args': {'args': list(args)},
@@ -459,6 +461,10 @@ class EasyJobsManager():
                 await self.add_job_queue(queue)
             await self.job_queues[queue].put(job)
             self.job_results[job['job_id']] = asyncio.Queue()
+    async def load_results_queue(self):
+        results = await self.db.tables['jobs'].select('job_id')
+        for result in results:
+            self.job_results[result['job_id']] = asyncio.Queue()
 
     async def start_queue_workers(self, queue: str, count: int = 1):
         for _ in range(count):
