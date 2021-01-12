@@ -384,4 +384,5 @@ class EasyJobsWorker:
                 if isinstance(e, asyncio.CancelledError):
                     break
                 self.log.exception(f"error in worker")
+                await asyncio.sleep(5)
         self.log.warning(f"worker exiting")
