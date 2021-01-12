@@ -10,7 +10,7 @@ from fastapi import FastAPI
 from aiopyql import data
 
 
-async def database_setup(server, db):
+async def database_setup(job_manager, server, db):
     if not 'jobs' in db.tables:
         await db.create_table(
             'jobs',
@@ -41,7 +41,7 @@ async def database_setup(server, db):
         )
     @server.on_event('shutdown')
     async def shutdown():
-        for worker in self.workers:
+        for worker in job_manager.workers:
             worker.cancel()
         db.log.debug(f"closing db {db}")
         await db.close()
@@ -104,7 +104,7 @@ class EasyJobsManager():
             cache_enabled=True
         )
         # trigger table creation - if needed
-        await database_setup(server, database)
+        
 
         job_manager = cls(
             rpc_server,
@@ -112,6 +112,9 @@ class EasyJobsManager():
             broker_type,
             broker_path
         )
+
+        await database_setup(job_manager, server, database)
+
         # load existing jobs/results before returning
         await job_manager.broker_setup()
         await job_manager.load_job_queues()
