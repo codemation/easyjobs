@@ -41,10 +41,8 @@ async def database_setup(server, db):
         )
     @server.on_event('shutdown')
     async def shutdown():
-        #for task in self.tasks:
-        #    task.cancel()
-        #for worker in self.workers:
-        #    worker.cancel()
+        for worker in self.workers:
+            worker.cancel()
         db.log.debug(f"closing db {db}")
         await db.close()
 
