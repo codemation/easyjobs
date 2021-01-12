@@ -655,7 +655,7 @@ class EasyJobsManager():
             break
 
         if not job_id in self.job_results:
-            raise Exception(f"no job startd with id {job_id}")
+            raise Exception(f"no results found with job_id - {job_id}")
 
         result = await self.job_results[job_id].get()
         await self.db.tables['results'].delete(where={'job_id': job_id})
