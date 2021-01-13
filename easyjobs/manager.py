@@ -1,5 +1,5 @@
 import asyncio
-import uuid, json, time, os
+import uuid, json, time, os, datetime
 import logging
 import random
 import subprocess as sp
@@ -39,12 +39,10 @@ async def database_setup(job_manager, server, db):
             'job_id',
             cache_enabled=True
         )
-    @server.on_event('shutdown')
-    async def shutdown():
-        for worker in job_manager.workers:
-            worker.cancel()
-        db.log.debug(f"closing db {db}")
-        await db.close()
+    
+    
+
+
 
 class EasyJobsManager():
     def __init__(
@@ -97,13 +95,18 @@ class EasyJobsManager():
             logger=logger,
             debug=debug,
         )
+        log = rpc_server.log
+
+        log.debug(f"JOB_MANAGER SETUP: rpc_server created")
 
         database = await data.Database.create(
             database='job_manager.db',
-            log=logger,
-            cache_enabled=True
+            log=rpc_server.log,
+            cache_enabled=True,
+            debug=debug
         )
         # trigger table creation - if needed
+        log.debug(f"JOB_MANAGER SETUP: database created")
         
 
         job_manager = cls(
@@ -112,13 +115,25 @@ class EasyJobsManager():
             broker_type,
             broker_path
         )
+        log.debug(f"JOB_MANAGER SETUP: job_manager created")
 
         await database_setup(job_manager, server, database)
 
+        @server.on_event('shutdown')
+        async def shutdown():
+            await job_manager.close()
+
+        log.debug(f"JOB_MANAGER SETUP: job_manager setup 1 completed")
+
         # load existing jobs/results before returning
         await job_manager.broker_setup()
-        await job_manager.load_job_queues()
-        await job_manager.load_results_queue()
+        log.debug(f"JOB_MANAGER SETUP: job_manager setup 2 completed")
+
+        #await job_manager.load_job_queues()
+        log.debug(f"JOB_MANAGER SETUP: job_manager setup 3 completed")
+
+        #await job_manager.load_results_queue()
+        log.debug(f"JOB_MANAGER SETUP: job_manager setup 4 completed")
 
         @rpc_server.origin(namespace='manager')
         async def add_job_to_queue(queue: str, job: dict):
@@ -196,8 +211,35 @@ class EasyJobsManager():
         @rpc_server.origin(namespace='manager')
         async def add_worker_to_pool(worker_id):
             return await job_manager.add_worker_to_pool(worker_id)
+
+        @job_manager.task(namespace='job_manager')
+        async def jobmanager_started():
+            message = f"JOB MANAGER started - {datetime.datetime.now().isoformat()}"
+            job_manager.log.warning(message)
+            return message
+
+        log.debug(f"JOB_MANAGER SETUP: job_manager setup 5 completed")
+
+        await jobmanager_started()
+
+        log.debug(f"JOB_MANAGER SETUP: job_manager setup 6 completed - finished setup")
         
         return job_manager
+    def __del__(self):
+        self.log.warning(f"JOB_MANAGER is closing")
+        asyncio.create_task(self.close())
+    async def close(self):
+        """
+        stops running running process task
+        """
+        
+        self.log.debug(f"CLOSING: workers: {self.workers}")
+        for worker in self.workers:
+            worker.cancel()
+        
+        await self.db.close()
+        self.log.warning(f"JOB_MANAGER successfully closed")
+        
     def create_cron_task(self, task, interval):
         async def cron():
             while True:
@@ -238,9 +280,11 @@ class EasyJobsManager():
         creates broker connection and worker for 
         consuming new messages
         """
+        self.log.debug(f"JOB_MANAGER broker_setup started")
         if self.broker_type == 'rabbitmq':
             from easyjobs.brokers.rabbitmq import rabbitmq_message_generator
             self.message_generator = rabbitmq_message_generator
+        self.log.debug(f"JOB_MANAGER broker_setup completed")
 
     async def start_message_consumer(self, queue):
         self.workers.append(
@@ -363,7 +407,7 @@ class EasyJobsManager():
             async def job(*args, **kwargs):
                 job_id = str(uuid.uuid1())
                 new_job = {
-                    'job_id': load_job_queuesjob_id,
+                    'job_id': job_id,
                     'namespace': namespace,
                     'name': func_name,
                     'args': {'args': list(args)},
@@ -450,6 +494,7 @@ class EasyJobsManager():
                 await self.start_message_consumer(queue)
     
     async def load_job_queues(self):
+        self.log.debug(f"JOB_MANAGER load_job_queues started")
         # start job_sender
         self.workers.append(
             asyncio.create_task(self.job_sender())
@@ -462,10 +507,16 @@ class EasyJobsManager():
                 await self.add_job_queue(queue)
             await self.job_queues[queue].put(job)
             self.job_results[job['job_id']] = asyncio.Queue()
+        self.log.debug(f"JOB_MANAGER load_job_queues finished")
+
     async def load_results_queue(self):
-        results = await self.db.tables['jobs'].select('job_id')
+        self.log.debug(f"JOB_MANAGER load_results_queue started")
+        results = await self.db.tables['results'].select('*')
         for result in results:
-            self.job_results[result['job_id']] = asyncio.Queue()
+            if not result['job_id'] in self.job_results:
+                self.job_results[result['job_id']] = asyncio.Queue()
+                await self.job_results[result['job_id']].put(result['results'])
+        self.log.debug(f"JOB_MANAGER load_results_queue finished")
 
     async def start_queue_workers(self, queue: str, count: int = 1):
         for _ in range(count):
@@ -549,6 +600,7 @@ class EasyJobsManager():
                 self.log.exception(f"error with job_sender")
                 
         self.log.warning(f"job_sender exiting")
+        return
 
     async def worker(self, queue):
         self.log.warning(f"worker started")
@@ -648,6 +700,7 @@ class EasyJobsManager():
         await self.job_results[job_id].put(results)
     
     async def get_job_result(self, job_id):
+        self.log.warning(f"get_job_result called for job_id: {job_id}")
         start = time.time()
         while time.time() - start < 5.0:
             if not job_id in self.job_results:
