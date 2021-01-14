@@ -32,48 +32,43 @@ async def producer(
     manager_port: str,
     manager_path: str,
     manager_secret: str,
-    queue: str
+    queue: str,
+    debug: bool = False
 ):
-    print(f"creating manager_proxy with manager_secret: {manager_secret}")
     manager_proxy = await EasyRpcProxy.create(
         manager_host,
         manager_port,
         manager_path,
         server_secret=manager_secret,
         namespace=f"{queue}",
-        debug=True
+        debug=debug
     )
 
-    await asyncio.sleep(2)
-    message = yield 'starting'
-
-    if message == 'finished':
-        yield 'finished'
+    await asyncio.sleep(1)
             
-    while True:
+    manager_proxy.log.warning(f"producer waiting for messages")
 
-        print(f"producer waiting for messages")
+    while True:
         message = yield
         if message == 'finished':
             break
-        print(f"producer received message: {message}")
-        #result = await manager_proxy['add_job_to_queue'](
-        #    queue, message
-        #)
+        manager_proxy.log.debug((f"producer sending job: {message}")
+
         args = message.get('args') if 'args' in message else []
         kwargs = message.get('kwargs') if 'kwargs' in message else {}
 
         result = await manager_proxy[message['name']](*args, **kwargs)
 
-        print(f"publish result: {result}")
-    print(f"producer exiting")
+        manager_proxy.log.debug((f"producer - result: {result}")
+    manager_proxy.log.warning((f"producer exiting")
 
 async def get_producer_channel(
     manager_host: str,
     manager_port: str,
     manager_path: str,
     manager_secret: str,
-    queue: str
+    queue: str,
+    debug: bool = False
 ):
     """
     returns Channel object with an intialized producer for adding jobs to a Job Manager Queue
@@ -101,7 +96,8 @@ async def get_producer_channel(
             manager_port,
             manager_path,
             manager_secret,
-            queue
+            queue,
+            debug=debug
         )
     )
     return channel
@@ -112,7 +108,8 @@ async def test():
         '8220',
         '/ws/jobs',
         manager_secret='abcd1234',
-        queue='DEFAULT'
+        queue='DEFAULT',
+        debug=True
     )
     for i in range(10):
         await channel.send_job(
