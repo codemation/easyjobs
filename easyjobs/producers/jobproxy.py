@@ -25,7 +25,12 @@ class Channel:
             await self.send_job(job)
         return
     def __del__(self):
-        asyncio.create_task(self.channel_generator.asend('finished'))
+        async def close_channel():
+            try:
+                self.channel_generator.asend('finished')
+            except StopAsyncIteration:
+                self.log.warning(f"channel closed")
+        asyncio.create_task(close_channel())
 
 async def producer(
     manager_host: str,
