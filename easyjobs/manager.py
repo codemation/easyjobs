@@ -331,7 +331,7 @@ class EasyJobsManager():
             self.log.debug(f"get_local_worker_task - local_funcs: {local_funcs}")
         except IndexError:
             return None
-        return local_funcs.get(f'{task_name}_{worker_id}_{task_type}')
+        return local_funcs.get(f'{task_type}_{task_name}_{task_type}_{worker_id}')
 
     def get_random_worker_task(self, queue, task_name, task_type):
         
@@ -339,7 +339,7 @@ class EasyJobsManager():
         try:
             global_funcs = self.rpc_server[f'{queue}']
             for func in global_funcs:
-                if task_name in func and task_type in func:
+                if f'{task_type}_{task_name}_{task_type}' in func:
                     worker_funcs.append(global_funcs[func])
             if worker_funcs:
                 return random.choice(worker_funcs)
@@ -473,11 +473,11 @@ class EasyJobsManager():
                             self.log.exception(f"exception running {func_name}")
                             return f'task {func_name} failed'
 
-            job.__name__ = f'{func_name}_{worker_id}_job'
+            job.__name__ = f'job_{func_name}_job_{worker_id}'
             
             self.rpc_server.origin(job, namespace=namespace)
 
-            task.__name__ = f"{func_name}_{worker_id}_task"
+            task.__name__ = f"task_{func_name}_task_{worker_id}"
             self.rpc_server.origin(task, namespace=namespace)
             self.rpc_server.origin(task, namespace=f'local_{namespace}')
 
