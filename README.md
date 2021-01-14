@@ -152,9 +152,12 @@ tasks created with subprocess=True, will create a new process (using an separate
 
 
 ## subprocess usage & blocking code 
-Subprocess Usage: subprocess=True definitions via @worker.task() require a 'WORKER_TASK_DIR' environment definition and a matching func_name.py within the given directory path.   
+
+subprocess=True definitions 
+- @worker.task(subprocess=True) require a 'WORKER_TASK_DIR' environment variable and a matching func_name.py within the given directory path.
+- @manager.task(subprocess=True) require 'MANAGER_HOST', 'MANAGER_PORT', 'WORKER_TASK_DIR' env variables are required
 ```python
-# job_worker.py
+# job_worker.py 
 
 os.environ['WORKER_TASK_DIR'] = '/home/codemation/blocking_funcs/'
 
@@ -162,6 +165,9 @@ os.environ['WORKER_TASK_DIR'] = '/home/codemation/blocking_funcs/'
 async def basic_blocking(a, b, c):
     pass   
 ```
+Note: task(subprocess=True) methods do not contain logic. All defined actions should be placed in WORKER_TASK_DIR using this [template](https://github.com/codemation/easyjobs/blob/main/easyjobs/workers/task_subprocess.py). 
+
+Arguments are not required in this subprocess definition, but should match the template work() args for readability. 
 
 <br>
 
