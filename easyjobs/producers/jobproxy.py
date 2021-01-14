@@ -109,7 +109,7 @@ async def get_producer_channel(
 
 async def test():
     channel = await get_producer_channel(
-        '192.168.1.18',
+        '0.0.0.0',
         '8220',
         '/ws/jobs',
         manager_secret='abcd1234',
