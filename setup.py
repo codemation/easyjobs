@@ -17,5 +17,5 @@ setuptools.setup(
          "Operating System :: OS Independent",
      ],
      python_requires='>=3.7, <4',   
-     install_requires=['easyrpc', 'aiopyql', 'aio-pika'],
+     install_requires=['easyrpc>=0.238', 'aiopyql>=0.350', 'aio-pika'],
  )

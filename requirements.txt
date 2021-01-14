@@ -1,3 +1,3 @@
-easyrpc
-aiopyql
+easyrpc>=0.238
+aiopyql>=0.350
 aio-pika
