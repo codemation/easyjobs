@@ -57,15 +57,15 @@ async def producer(
         message = yield
         if message == 'finished':
             break
-        manager_proxy.log.debug((f"producer sending job: {message}")
+        manager_proxy.log.debug(f"producer sending job: {message}")
 
         args = message.get('args') if 'args' in message else []
         kwargs = message.get('kwargs') if 'kwargs' in message else {}
 
         result = await manager_proxy[message['name']](*args, **kwargs)
 
-        manager_proxy.log.debug((f"producer - result: {result}")
-    manager_proxy.log.warning((f"producer exiting")
+        manager_proxy.log.debug(f"producer - result: {result}")
+    manager_proxy.log.warning(f"producer exiting")
 
 async def get_producer_channel(
     manager_host: str,
