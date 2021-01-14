@@ -19,57 +19,61 @@ A jobs framework for managing and  distributing  async / non-async tasks
 
 ## Basic Usage - With Broker
 
-    # Manager - Jobs Runner
-    # job_manager.py
+```python
+# Manager - Jobs Runner
+# job_manager.py
 
-    import asyncio
-    from easyjobs.manager import EasyJobsManager
-    from fastapi import FastAPI
+import asyncio
+from easyjobs.manager import EasyJobsManager
+from fastapi import FastAPI
 
-    server = FastAPI()
+server = FastAPI()
 
-    @server.on_event('startup')
-    async def startup():
+@server.on_event('startup')
+async def startup():
 
-        job_manager = await EasyJobsManager.create(
-            server,
-            '/ws/jobs',
-            server_secret='abcd1234',
-            broker_type='rabbitmq',
-            broker_path='amqp://guest:guest@127.0.0.1/'
-        )
+    job_manager = await EasyJobsManager.create(
+        server,
+        '/ws/jobs',
+        server_secret='abcd1234',
+        broker_type='rabbitmq',
+        broker_path='amqp://guest:guest@127.0.0.1/'
+    )
 
-        @job_manager.task()
-        async def basic_job(arg1, arg2, arg3, *args):
-            print(f"basic_job: {arg1} {arg2} {arg3} - args {args}")
-            await asyncio.sleep(2)
-            return arg1, arg2, arg3
+    @job_manager.task()
+    async def basic_job(arg1, arg2, arg3, *args):
+        print(f"basic_job: {arg1} {arg2} {arg3} - args {args}")
+        await asyncio.sleep(2)
+        return arg1, arg2, arg3
+```
 
 ## Basic Usage - No Broker
 
-    # Manager - Jobs Runner
-    # job_manager.py
+```python
+# Manager - Jobs Runner
+# job_manager.py
 
-    import asyncio
-    from easyjobs.manager import EasyJobsManager
-    from fastapi import FastAPI
+import asyncio
+from easyjobs.manager import EasyJobsManager
+from fastapi import FastAPI
 
-    server = FastAPI()
+server = FastAPI()
 
-    @server.on_event('startup')
-    async def startup():
+@server.on_event('startup')
+async def startup():
 
-        job_manager = await EasyJobsManager.create(
-            server,
-            '/ws/jobs',
-            server_secret='abcd1234'
-        )
+    job_manager = await EasyJobsManager.create(
+        server,
+        '/ws/jobs',
+        server_secret='abcd1234'
+    )
 
-        @job_manager.task()
-        async def basic_job(arg1, arg2, arg3, *args):
-            print(f"basic_job: {arg1} {arg2} {arg3} - args {args}")
-            await asyncio.sleep(2)
-            return arg1, arg2, arg3
+    @job_manager.task()
+    async def basic_job(arg1, arg2, arg3, *args):
+        print(f"basic_job: {arg1} {arg2} {arg3} - args {args}")
+        await asyncio.sleep(2)
+        return arg1, arg2, arg3
+```
 
 Start Job Manager
 
@@ -77,32 +81,34 @@ Start Job Manager
 
 ## Connect Worker
 
-    # job_worker.py
+```python
+# job_worker.py
 
-    import asyncio
-    from fastapi import FastAPI
-    from easyjobs.workers.worker import EasyJobsWorker
+import asyncio
+from fastapi import FastAPI
+from easyjobs.workers.worker import EasyJobsWorker
 
-    server = FastAPI()
+server = FastAPI()
 
-    @server.on_event('startup')
-    async def setup():
-        worker = await EasyJobsWorker.create(
-            server,
-            '/ws/jobs',
-            server_secret='abcd1234',
-            manager_host='192.168.1.18',
-            manager_port=8220,
-            manager_secret='abcd1234',
-            manager_path='/ws/jobs',
-            jobs_queue='DEFAULT',
-            task_workers=3
-        )
+@server.on_event('startup')
+async def setup():
+    worker = await EasyJobsWorker.create(
+        server,
+        '/ws/jobs',
+        server_secret='abcd1234',
+        manager_host='192.168.1.18',
+        manager_port=8220,
+        manager_secret='abcd1234',
+        manager_path='/ws/jobs',
+        jobs_queue='DEFAULT',
+        task_workers=3
+    )
 
-        @worker.task()
-        async def work_a(a, b, c):
-            await asyncio.sleep(5)
-            return {'result': [a, b, c]}
+    @worker.task()
+    async def work_a(a, b, c):
+        await asyncio.sleep(5)
+        return {'result': [a, b, c]}
+```
 
 Start Worker - With 5 Workers
 
@@ -123,20 +129,21 @@ Tasks can be registered on a Manager or Worker by using referencing the <instanc
 
 Examples
 
-    @worker.task(namespace='finance')
-    async def finance_work(employee_id: str, employee_data: dict):
-        """
-        do finance work
-        """
-        return finance_results
-    
-    @manager.task()
-    async def general_work(general_data: dict):
-        """
-        do general work
-        """
-        return general_results
+```python
+@worker.task(namespace='finance')
+async def finance_work(employee_id: str, employee_data: dict):
+    """
+    do finance work
+    """
+    return finance_results
 
+@manager.task()
+async def general_work(general_data: dict):
+    """
+    do general work
+    """
+    return general_results
+```
 
 ## A Note on Blocking Tasks ( Work that cannot sleep, or CPU bound)
 Worker tasks which do not contain I/O bound tasks ( Web Requests /  Database querries ) and run beyond 10 seconds, should be placed within a task subprocess definition. This is to allow the current worker thread continue servicing other concurrent tasks. 
@@ -146,31 +153,34 @@ tasks created with subprocess=True, will create a new process (using an separate
 
 ## subprocess usage & blocking code 
 Subprocess Usage: subprocess=True definitions via @worker.task() require a 'WORKER_TASK_DIR' environment definition and a matching func_name.py within the given directory path.   
+```python
+# job_worker.py
 
-    # job_worker.py
+os.environ['WORKER_TASK_DIR'] = '/home/codemation/blocking_funcs/'
 
-    os.environ['WORKER_TASK_DIR'] = '/home/codemation/blocking_funcs/'
-
-    @worker.task(subprocess=True)
-    async def basic_blocking(a, b, c):
-        pass   
+@worker.task(subprocess=True)
+async def basic_blocking(a, b, c):
+    pass   
+```
 
 <br>
 
-    # /home/codemation/blocking_funcs/basic_blocking.py
-    import time
-    from easyjobs.workers.task import subprocess
+```python
+# /home/codemation/blocking_funcs/basic_blocking.py
+import time
+from easyjobs.workers.task import subprocess
 
-    @subprocess
-    def work(a, b, c):
-        """
-        insert blocking / non-blocking work here
-        """
-        time.sleep(5) # Blocking
-        return {'result': 'I slept for 5 seconds - blocking with {a} {b} {c}'}
-        
-    if __name__ == '__main__':
-        work()
+@subprocess
+def work(a, b, c):
+    """
+    insert blocking / non-blocking work here
+    """
+    time.sleep(5) # Blocking
+    return {'result': 'I slept for 5 seconds - blocking with {a} {b} {c}'}
+
+if __name__ == '__main__':
+    work()
+```
 
 ## Jobs
 
@@ -204,21 +214,21 @@ See [Producers](https://github.com/codemation/easyjobs/tree/main/easyjobs/produc
 ## Consuming Results
 When a Job is created via a jobs_proxy producer, a job_id is returned immedietly. This job_id can be used to pull later or awaited right away( this does NOT make the job start sooner ).
 
-    
-    # results_consumer.py
-    import asyncio
-    from easyrpc.proxy import EasyRpcProxy
-    
-    async def get_results(job_id):
-        results_proxy = await EasyRpcProxy.create(
-            '0.0.0.0',  # EasyJobsManager Host / IP
-            '8220',     # EasyJobsManager Port
-            '/ws/manager',
-            server_secret='abcd1234',
-            namespace='job_results'
-        )
-        return await results_proxy['get_job_result'](job_id)
-    
+```python    
+# results_consumer.py
+import asyncio
+from easyrpc.proxy import EasyRpcProxy
+
+async def get_results(job_id):
+    results_proxy = await EasyRpcProxy.create(
+        '0.0.0.0',  # EasyJobsManager Host / IP
+        '8220',     # EasyJobsManager Port
+        '/ws/manager',
+        server_secret='abcd1234',
+        namespace='job_results'
+    )
+    return await results_proxy['get_job_result'](job_id)
+```
 
 
 ## Terminology
