@@ -352,6 +352,8 @@ class EasyJobsWorker:
                         if job['retry_policy'] == 'never':
                             break
                         continue
+                    # no retries needed
+                    break
                 
                 self.log.debug(f"worker - results: {results}")
 
