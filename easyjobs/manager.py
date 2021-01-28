@@ -623,6 +623,7 @@ class EasyJobsManager():
                         if job['retry_policy'] == 'never':
                             break
                         continue
+                    break
 
                 if not results or results == f'task {name} failed':
                     results = f'task {name} failed'

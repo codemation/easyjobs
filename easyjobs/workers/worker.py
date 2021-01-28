@@ -377,7 +377,7 @@ class EasyJobsWorker:
                 # delete job 
                 await self.delete_job(job_id)
 
-                if job['run_after']:
+                if job['run_after'] and not results == f'task {name} failed':
                     run_after = self.get_local_worker_task(queue, job['run_after'], 'job')
                     if not run_after is None:
                         await run_after(**results)
