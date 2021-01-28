@@ -1,4 +1,5 @@
-# easyjobs
+![](./images/logo.png)
+
 A jobs framework for managing and  distributing  async / non-async tasks 
 
 ## Quick Start
@@ -168,7 +169,7 @@ async def basic_blocking(a, b, c):
 Note: task(subprocess=True) methods do not contain logic. All defined actions should be placed in WORKER_TASK_DIR using this [template](https://github.com/codemation/easyjobs/blob/main/easyjobs/workers/task_subprocess.py). 
 
 Arguments are not required in this subprocess definition, but should match the template work() args for readability. 
-
+    
 <br>
 
 ```python
