@@ -4,7 +4,7 @@ import logging
 import random
 import subprocess as sp
 from easyrpc.server import EasyRpcServer
-from easyrpc.register import Coroutine
+from easyrpc.register import Coroutine, get_signature_as_dict
 from fastapi import FastAPI
 
 server = FastAPI()
@@ -30,6 +30,30 @@ class EasyJobsWorker:
         
         self.task_callback_results = {}
 
+        # list of tasks which should be created via add_task
+        self.local_tasks = []
+
+        async def task_monitor():
+            """
+            job that monitors local_tasks in namespaces
+            tasks in self.local_tasks are tasks registered by workers at startup
+            if the local task does not exist in the namespace, the manager might be down or
+            restarting
+            """
+            try:
+                for task in self.local_tasks:
+                    namespace = task['namespace']
+                    name = task['name']
+                    sig_config = task['sig']
+                    if not name in self.rpc_server[namespace]:
+                        self.log.warning(f"task {name} not found in {namespace} - calling add_task on manager")
+                        result = await self.add_task(namespace, name, sig_config)
+                        self.log.warning(f"add_task result: {result}")
+            except Exception as e:
+                self.log.error(f"task_monitor - error checking local_tasks, maybe the JobsManager is down / restarting")
+        
+        # run task_monitor at 30 sec intervals
+        self.rpc_proxy.run_cron(task_monitor, 30)
 
     @classmethod
     async def create(
@@ -185,7 +209,11 @@ class EasyJobsWorker:
             self.rpc_server.origin(task, namespace=namespace)
             self.rpc_server.origin(task, namespace=f'local_{namespace}')
 
-            asyncio.create_task(self.add_task(namespace, func_name))
+            sig_config = {'name': func_name, 'sig': get_signature_as_dict(func)}
+            
+
+            #asyncio.create_task(self.add_task(namespace, func_name, sig_config))
+            self.local_tasks.append({'name': func_name, 'namespace': namespace, 'sig': sig_config})
 
             return job
         return job_register
@@ -217,8 +245,8 @@ class EasyJobsWorker:
             if not isinstance(e, asyncio.CancelledError):
                 self.log.exception(f"error with task_subprocess_callback for request_id: {request_id}")
                 
-    async def add_task(self, queue, task_name):
-        return await self.rpc_server['manager']['add_task'](queue, task_name)
+    async def add_task(self, queue, task_name, sig_config):
+        return await self.rpc_server['manager']['add_task'](queue, task_name, sig_config)
 
     async def add_job_queue(self, queue: str):
         return await self.rpc_server['manager']['add_job_queue'](queue)

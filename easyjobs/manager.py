@@ -5,12 +5,25 @@ import random
 import subprocess as sp
 
 from easyrpc.server import EasyRpcServer
-from easyrpc.register import Coroutine
+from easyrpc.register import Coroutine, create_proxy_from_config, get_signature_as_dict
 from fastapi import FastAPI
 from aiopyql import data
+from easyjobs.api.manager_api import api_setup
 
 
 async def database_setup(job_manager, server, db):
+    if not 'job_queue' in db.tables:
+        await db.create_table(
+            'job_queue',
+            [
+                ('request_id', str, 'UNIQUE'),
+                ('namespace', str),
+                ('job', str),
+                ('job_id', str)
+            ],
+            'request_id',
+            cache_enabled=True
+        )
     if not 'jobs' in db.tables:
         await db.create_table(
             'jobs',
@@ -41,9 +54,6 @@ async def database_setup(job_manager, server, db):
         )
     
     
-
-
-
 class EasyJobsManager():
     def __init__(
         self,
@@ -129,7 +139,7 @@ class EasyJobsManager():
         await job_manager.broker_setup()
         log.debug(f"JOB_MANAGER SETUP: job_manager setup 2 completed")
 
-        #await job_manager.load_job_queues()
+        await job_manager.load_job_queues()
         log.debug(f"JOB_MANAGER SETUP: job_manager setup 3 completed")
 
         #await job_manager.load_results_queue()
@@ -160,8 +170,8 @@ class EasyJobsManager():
             return await job_manager.add_job(job)
         
         @rpc_server.origin(namespace='manager')
-        async def add_task(queue, task_name):
-            return await job_manager.add_task(queue, task_name)
+        async def add_task(queue, task_name, sig_config):
+            return await job_manager.add_task(queue, task_name, sig_config)
 
         @rpc_server.origin(namespace='manager')
         async def create_task_subprocess_callback(request_id, worker_id):
@@ -224,6 +234,8 @@ class EasyJobsManager():
 
         log.debug(f"JOB_MANAGER SETUP: job_manager setup 6 completed - finished setup")
         
+        await api_setup(job_manager)
+
         return job_manager
     def __del__(self):
         self.log.warning(f"JOB_MANAGER is closing")
@@ -282,47 +294,22 @@ class EasyJobsManager():
         """
         self.log.debug(f"JOB_MANAGER broker_setup started")
         if self.broker_type == 'rabbitmq':
-            from easyjobs.brokers.rabbitmq import rabbitmq_message_generator
+            from easyjobs.brokers.rabbitmq import rabbitmq_message_generator, message_consumer
             self.message_generator = rabbitmq_message_generator
+            self.message_consumer = message_consumer
+        else:
+            from easyjobs.brokers.easyjobs import easyjobs_message_generator, message_consumer
+            self.message_generator = easyjobs_message_generator
+            self.message_consumer = message_consumer
+
         self.log.debug(f"JOB_MANAGER broker_setup completed")
 
     async def start_message_consumer(self, queue):
         self.workers.append(
             asyncio.create_task(
-                self.message_consumer(queue)
+                self.message_consumer(self, queue)
             )
         )
-
-    async def message_consumer(self, queue):
-        self.log.warning(f"message_consumer - starting - for type {self.broker_type} ")
-        message_generator = self.message_generator(self, self.broker_path, queue)
-        while True:
-            try:
-                job = await message_generator.asend(None)
-                if job and 'job' in job:
-                    self.log.debug(f"message_consumer pulled {job}")
-                    job = json.loads(job)['job']
-                    self.log.debug(f"message_consumer - job: {job}")
-
-                    job['namespace'] = queue
-                    if not 'args' in job:
-                        job['args'] = {'args': []}
-                    else:
-                        job['args'] = {'args': job['args']}
-                    if not 'kwargs' in job:
-                        job['kwargs'] = {}
-                    result = await self.run_job(
-                        queue, job['name'], args=job['args']['args'], kwargs=job['kwargs']
-                    )
-                    self.log.debug(f"message_consumer run_job result: {result}")
-            except Exception as e:
-                if isinstance(e, asyncio.CancelledError):
-                    break
-                self.log.exception(f"ERROR: message_consumer failed to pull messages from broker {self.broker_type}")
-                await asyncio.sleep(5)
-                message_generator = self.message_generator(self, self.broker_path, queue)
-
-        await message_generator.asend('finished')
     
     def get_local_worker_task(self, queue, task_name, task_type):
         worker_id = '_'.join(self.rpc_server.server_id.split('-'))
@@ -371,7 +358,7 @@ class EasyJobsManager():
         return f"task_subprocess_callback created for request_id: {request_id} - worker_id: {worker_id}"
 
 
-    async def add_task(self, queue: str, task_name: str):
+    async def add_task(self, queue: str, task_name: str, sig_config: dict):
         """
         called by workers to ensure task load balancer exists for 
         registered task
@@ -380,12 +367,34 @@ class EasyJobsManager():
             self.tasks[queue] = {}
         if not task in self.tasks[queue]:
         """
+        await self.add_job_queue(queue)
+
         async def task(*args, **kwargs):
+            request_id = str(uuid.uuid1())
+            await self.db.tables['job_queue'].insert(
+                request_id=request_id,
+                namespace=queue,
+                job={
+                    'name': task_name,
+                    'args': args,
+                    'kwargs': kwargs
+                }
+            )
+            return request_id
             job = self.get_random_worker_task(queue, task_name, 'job')
             job_id = await job(*args, **kwargs)
             return job_id
-        task.__name__ = task_name
-        self.rpc_server.origin(task, namespace=queue)
+
+        task_proxy = create_proxy_from_config(sig_config, task)
+
+        task_proxy.__name__ = task_name
+
+        # removing current openapi schema to allow refresh
+        self.rpc_server.server.openapi_schema = None
+
+        self.rpc_server.server.post(f'/task/{task_name}', tags=[queue])(task_proxy)
+
+        self.rpc_server.origin(task_proxy, namespace=queue)
         return f"{task_name} registered"
 
     def task(
@@ -416,7 +425,7 @@ class EasyJobsManager():
                     'on_failure': on_failure,
                     'run_after': run_after
                 }
-                self.log.debug(f"new_job: {new_job}")
+                self.log.warning(f"new_job: {new_job}")
                 await self.new_job_queue.put(new_job)
                 return job_id
 
@@ -481,7 +490,9 @@ class EasyJobsManager():
             self.rpc_server.origin(task, namespace=namespace)
             self.rpc_server.origin(task, namespace=f'local_{namespace}')
 
-            asyncio.create_task(self.add_task(namespace, func_name))
+            sig_config = {'name': func_name, 'sig': get_signature_as_dict(func)}
+
+            asyncio.create_task(self.add_task(namespace, func_name, sig_config))
 
             return job
         return job_register
@@ -490,8 +501,8 @@ class EasyJobsManager():
         if not queue in self.job_queues:
             self.job_queues[queue] = asyncio.Queue()
             await self.start_queue_workers(queue)
-            if self.broker_type and self.broker_type in self.BROKER_TYPES:
-                await self.start_message_consumer(queue)
+            #if self.broker_type and self.broker_type in self.BROKER_TYPES:
+            await self.start_message_consumer(queue)
     
     async def load_job_queues(self):
         self.log.debug(f"JOB_MANAGER load_job_queues started")
@@ -591,7 +602,7 @@ class EasyJobsManager():
         while True:
             try:
                 job = await self.new_job_queue.get()
-                self.log.debug(f"job_sender: job {job}")
+                self.log.warning(f"job_sender: job {job}")
                 queue = job['namespace']
                 await self.add_job(job)
             except Exception as e:
