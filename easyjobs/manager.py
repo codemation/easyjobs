@@ -8,7 +8,7 @@ from easyrpc.server import EasyRpcServer
 from easyrpc.register import Coroutine, create_proxy_from_config, get_signature_as_dict
 from fastapi import FastAPI
 from aiopyql import data
-#from easyjobs.api.manager_api import api_setup
+from easyjobs.api.manager_api import api_setup
 
 
 async def database_setup(job_manager, server, db):
@@ -143,7 +143,7 @@ class EasyJobsManager():
         await job_manager.load_job_queues()
         log.debug(f"JOB_MANAGER SETUP: job_manager setup 3 completed")
 
-        #await job_manager.load_results_queue()
+        await job_manager.load_results_queue()
         log.debug(f"JOB_MANAGER SETUP: job_manager setup 4 completed")
 
         @rpc_server.origin(namespace='manager')
@@ -235,7 +235,7 @@ class EasyJobsManager():
 
         log.debug(f"JOB_MANAGER SETUP: job_manager setup 6 completed - finished setup")
         
-        #await api_setup(job_manager)
+        await api_setup(job_manager)
 
         return job_manager
     def __del__(self):
@@ -381,19 +381,16 @@ class EasyJobsManager():
                     'kwargs': kwargs
                 }
             )
-            return request_id
-            job = self.get_random_worker_task(queue, task_name, 'job')
-            job_id = await job(*args, **kwargs)
-            return job_id
+            return {'request_id': request_id}
 
         task_proxy = create_proxy_from_config(sig_config, task)
 
         task_proxy.__name__ = task_name
 
-        # removing current openapi schema to allow refresh
-        self.rpc_server.server.openapi_schema = None
-
-        self.rpc_server.server.post(f'/task/{task_name}', tags=[queue])(task_proxy)
+        if not queue == 'job_manager':
+            # removing current openapi schema to allow refresh
+            self.rpc_server.server.openapi_schema = None
+            self.rpc_server.server.post(f'/task/{task_name}', tags=[queue])(task_proxy)
 
         self.rpc_server.origin(task_proxy, namespace=queue)
         return f"{task_name} registered"
@@ -711,7 +708,21 @@ class EasyJobsManager():
             results=results
         )
         await self.job_results[job_id].put(results)
-    
+    async def get_job_result_by_request_id(self, request_id):
+        self.log.warning(f"get_job_result called for request_id: {request_id}")
+        start = time.time()
+
+        while time.time() - start < 5.0:
+            queued_job = await self.db.tables['job_queue'][request_id]
+            if queued_job is None:
+                return f"No queued job with request_id {request_id} found" 
+            if queued_job['job_id']:
+                return await self.get_job_result(queued_job['job_id'])
+            await asyncio.sleep(time.time() - start)
+            continue
+        return f"timeout waiting for request {request_id} in queue, job not created yet"
+
+
     async def get_job_result(self, job_id):
         self.log.warning(f"get_job_result called for job_id: {job_id}")
         start = time.time()
@@ -726,4 +737,6 @@ class EasyJobsManager():
 
         result = await self.job_results[job_id].get()
         await self.db.tables['results'].delete(where={'job_id': job_id})
+        await self.db.tables['job_queue'].delete(where={'job_id': job_id})
+        del self.job_results[job_id]
         return result
