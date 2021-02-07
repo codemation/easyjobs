@@ -8,7 +8,7 @@ from easyrpc.server import EasyRpcServer
 from easyrpc.register import Coroutine, create_proxy_from_config, get_signature_as_dict
 from fastapi import FastAPI
 from aiopyql import data
-from easyjobs.api.manager_api import api_setup
+#from easyjobs.api.manager_api import api_setup
 
 
 async def database_setup(job_manager, server, db):
@@ -63,6 +63,7 @@ class EasyJobsManager():
         broker_path: str = None
     ):
         self.rpc_server = rpc_server
+        self.rpc_server.server.title = f"Easyjobs Manager"
         self.log = self.rpc_server.log
 
         self.job_queues = {}
@@ -234,7 +235,7 @@ class EasyJobsManager():
 
         log.debug(f"JOB_MANAGER SETUP: job_manager setup 6 completed - finished setup")
         
-        await api_setup(job_manager)
+        #await api_setup(job_manager)
 
         return job_manager
     def __del__(self):
