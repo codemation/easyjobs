@@ -30,3 +30,34 @@ async def rabbitmq_message_generator(
                 if isinstance(e, asyncio.CancelledError):
                     break
                 log.exception(f"rabbitmq - error pulling messages")
+                
+async def message_consumer(manager, queue):
+    manager.log.warning(f"message_consumer - starting - for type {manager.broker_type} ")
+    message_generator = manager.message_generator(manager, manager.broker_path, queue)
+    while True:
+        try:
+            job = await message_generator.asend(None)
+            if job and 'job' in job:
+                manager.log.debug(f"message_consumer pulled {job}")
+                job = json.loads(job)['job']
+                manager.log.debug(f"message_consumer - job: {job}")
+
+                job['namespace'] = queue
+                if not 'args' in job:
+                    job['args'] = {'args': []}
+                else:
+                    job['args'] = {'args': job['args']}
+                if not 'kwargs' in job:
+                    job['kwargs'] = {}
+                result = await manager.run_job(
+                    queue, job['name'], args=job['args']['args'], kwargs=job['kwargs']
+                )
+                manager.log.debug(f"message_consumer run_job result: {result}")
+        except Exception as e:
+            if isinstance(e, asyncio.CancelledError):
+                break
+            manager.log.exception(f"ERROR: message_consumer failed to pull messages from broker {manager.broker_type}")
+            await asyncio.sleep(5)
+            message_generator = manager.message_generator(manager, manager.broker_path, queue)
+
+    await message_generator.asend('finished')
