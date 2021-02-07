@@ -24,28 +24,3 @@ Create Jobs to be run
         del channel
 
     asyncio.run()
-
-## Job Proxy - Send Jobs Directly to EasyJobsManager
-
-    from easyjobs.producers.jobproxy import get_producer_channel
-
-    async def main():
-        channel = await get_producer_channel(
-            '192.168.1.18',
-            '8220',
-            '/ws/jobs',
-            manager_secret='abcd1234',
-            queue='DEFAULT'
-        )
-        for i in range(10):
-            await channel.send_job(
-                {
-                    'job': {
-                        'name': 'worker_a',
-                        'args': [i+1, i+2, i+3]
-                    }
-                }
-            )
-        del channel
-
-    asyncio.run(main())
