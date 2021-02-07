@@ -4,7 +4,7 @@ with open("README.md", "r") as fh:
 setuptools.setup(
      name='easyjobs',  
      version='PYQLVERSION', # PYQLVERSION
-     packages=setuptools.find_packages(include=['easyjobs', 'easyjobs.brokers', 'easyjobs.producers', 'easyjobs.workers'], exclude=['build']),
+     packages=setuptools.find_packages(include=['easyjobs', 'easyjobs.api', 'easyjobs.brokers', 'easyjobs.producers', 'easyjobs.workers'], exclude=['build']),
      author="Joshua Jamison",
      author_email="joshjamison1@gmail.com",
      description="An easy to use, celerly-like jobs framework, for creating, distributing, and managing workloads",
@@ -17,5 +17,5 @@ setuptools.setup(
          "Operating System :: OS Independent",
      ],
      python_requires='>=3.7, <4',   
-     install_requires=['easyrpc>=0.238', 'aiopyql>=0.350', 'aio-pika'],
+     install_requires=['easyrpc>=0.238', 'aiopyql>=0.351', 'aio-pika'],
  )
