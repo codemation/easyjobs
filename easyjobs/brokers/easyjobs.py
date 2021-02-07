@@ -9,7 +9,7 @@ async def easyjobs_message_generator(
     while True:
         try:
             queued = await manager.db.tables['job_queue'].select(
-                '*', where={'namespace': queue_name}
+                '*', where={'namespace': queue_name, 'job_id': None}
             )
             if len(queued) == 0:
                 status = yield 'empty'
@@ -18,12 +18,13 @@ async def easyjobs_message_generator(
                 continue
             for job in queued:
 
-                status = yield job
-                if status == 'finished':
+                job_id = yield job
+                if job_id == 'finished':
                     raise asyncio.CancelledError(f"rabbitmq finished")
-
-                if status == 'added':
-                    await manager.db.tables['job_queue'].delete(
+                
+                if job_id:
+                    await manager.db.tables['job_queue'].update(
+                        job_id=job_id,
                         where={'request_id': job['request_id']}
                     )
                 status = yield
@@ -54,14 +55,16 @@ async def message_consumer(manager, queue):
                     job['args'] = {'args': job['args']}
                 if not 'kwargs' in job:
                     job['kwargs'] = {}
-                result = await manager.run_job(
+                job_id = await manager.run_job(
                     queue, job['name'], args=job['args']['args'], kwargs=job['kwargs']
                 )
-                manager.log.warning(f"add_job result: {result}")
+                manager.log.warning(f"add_job job_id: {job_id}")
                 # notify broker that job was added
-                await message_generator.asend('added')
+                await message_generator.asend(job_id)
         
         except Exception as e:
             if isinstance(e, asyncio.CancelledError):
                 break
             manager.log.exception(f"error in easyjobs broker")
+            await asyncio.sleep(5)
+            
