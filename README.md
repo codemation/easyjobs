@@ -134,6 +134,7 @@ Tasks can be registered on a Manager or Worker by using referencing the <instanc
 - run_after - Defaults Unspecified - Will create job with run_after=<task_name> using results of current task as argument for run_afer task.
 - subprocess - Defaults False - Defines whether a task should be created via a subprocess 
 <br>
+
 ```python
 @worker.task(namespace='finance')
 async def finance_work(employee_id: str, employee_data: dict):
