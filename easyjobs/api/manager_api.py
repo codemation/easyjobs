@@ -1,7 +1,7 @@
 async def api_setup(manager):
     from typing import Optional
     from fastapi import HTTPException
-    server = manager.rpc_server.server
+    server = manager.api_router
 
     @server.get('/job/pull/result', tags=['Manager'])
     async def pull_job_result(
