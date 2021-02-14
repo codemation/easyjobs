@@ -60,11 +60,16 @@ class EasyJobsManager():
         rpc_server: EasyRpcServer,
         database: data.Database,
         broker_type: str = None,
-        broker_path: str = None
+        broker_path: str = None,
+        api_router = None
     ):
         self.rpc_server = rpc_server
         self.rpc_server.server.title = f"Easyjobs Manager"
         self.log = self.rpc_server.log
+        if api_router:
+            self.api_router = api_router
+        else:
+            self.api_router = self.rpc_server.server
 
         self.job_queues = {}
         self.job_results = {}
@@ -93,6 +98,7 @@ class EasyJobsManager():
         server_secret: str, 
         broker_type: str = None,
         broker_path: str = None,
+        api_router = None,
         encryption_enabled: bool = False,
         logger: logging.Logger = None,
         debug: bool = False
@@ -124,7 +130,8 @@ class EasyJobsManager():
             rpc_server,
             database,
             broker_type,
-            broker_path
+            broker_path,
+            api_router
         )
         log.debug(f"JOB_MANAGER SETUP: job_manager created")
 
@@ -390,7 +397,7 @@ class EasyJobsManager():
         if not queue == 'job_manager':
             # removing current openapi schema to allow refresh
             self.rpc_server.server.openapi_schema = None
-            self.rpc_server.server.post(f'/task/{task_name}', tags=[queue])(task_proxy)
+            self.api_router.post(f'/task/{task_name}', tags=[queue])(task_proxy)
 
         self.rpc_server.origin(task_proxy, namespace=queue)
         return f"{task_name} registered"
