@@ -61,11 +61,9 @@ class EasyJobsWorker:
     async def create(
         cls,
         server: FastAPI,
-        jobs_path: str,
         server_secret: str,
         manager_host: str,
         manager_port: str,
-        manager_path: str,
         manager_secret: str,
         jobs_queue: str,
         max_tasks_per_worker: int = 3,
@@ -74,7 +72,7 @@ class EasyJobsWorker:
     ):
         rpc_server = await EasyRpcServer.create(
             server,
-            jobs_path,
+            '/ws/jobs',
             server_secret,
             logger=logger,
             debug=debug
@@ -83,7 +81,7 @@ class EasyJobsWorker:
         rpc_proxy = await rpc_server.create_server_proxy(
             manager_host,
             manager_port,
-            manager_path,
+            '/ws/jobs',
             server_secret=manager_secret,
             namespace=f'{jobs_queue}'
         )
@@ -91,7 +89,7 @@ class EasyJobsWorker:
         await rpc_server.create_server_proxy(
             manager_host,
             manager_port,
-            manager_path,
+            '/ws/jobs',
             server_secret=manager_secret,
             namespace=f'manager'
         )
@@ -177,7 +175,6 @@ class EasyJobsWorker:
                             f'{WORKER_TASK_DIR}/{func_name}.py',
                             self.rpc_proxy.origin_host,
                             str(self.rpc_proxy.origin_port),
-                            self.rpc_proxy.origin_path,
                             self.rpc_proxy.server_secret,
                             request_id,
                             arguments

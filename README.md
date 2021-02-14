@@ -36,7 +36,6 @@ async def startup():
 
     job_manager = await EasyJobsManager.create(
         server,
-        '/ws/jobs',
         server_secret='abcd1234',
         broker_type='rabbitmq',
         broker_path='amqp://guest:guest@127.0.0.1/'
@@ -66,7 +65,6 @@ async def startup():
 
     job_manager = await EasyJobsManager.create(
         server,
-        '/ws/jobs',
         server_secret='abcd1234'
     )
 
@@ -96,12 +94,10 @@ server = FastAPI()
 async def setup():
     worker = await EasyJobsWorker.create(
         server,
-        '/ws/jobs',
         server_secret='abcd1234',
         manager_host='192.168.1.18',
         manager_port=8220,
         manager_secret='abcd1234',
-        manager_path='/ws/jobs',
         jobs_queue='DEFAULT',
         max_tasks_per_worker=3
     )

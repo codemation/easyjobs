@@ -94,7 +94,6 @@ class EasyJobsManager():
     async def create(
         cls,
         server: FastAPI,
-        jobs_path: str, # path accessed to start WS connection /ws/my_origin_paths
         server_secret: str, 
         broker_type: str = None,
         broker_path: str = None,
@@ -106,7 +105,7 @@ class EasyJobsManager():
 
         rpc_server = await EasyRpcServer.create(
             server,
-            jobs_path, # path accessed to start WS connection /ws/my_origin_paths
+            '/ws/jobs', # path accessed to start WS connection /ws/my_origin_paths
             server_secret,
             encryption_enabled,
             logger=logger,
