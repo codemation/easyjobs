@@ -14,10 +14,12 @@ class EasyJobsWorker:
         self,
         rpc_server: EasyRpcServer,
         rpc_proxy,
+        jobs_queue: str = 'DEFAULT',
         max_tasks_per_worker: int = 3
     ):
         self.rpc_server = rpc_server
         self.rpc_proxy = rpc_proxy
+        self.jobs_queue = jobs_queue
 
         self.log = self.rpc_server.log
         self.workers = []
@@ -110,7 +112,8 @@ class EasyJobsWorker:
         jobs_worker = cls(
             rpc_server,
             rpc_proxy,
-            max_tasks_per_worker,
+            jobs_queue,
+            max_tasks_per_worker
         )
         await jobs_worker.start_queue_workers(jobs_queue)
         await asyncio.sleep(2)
@@ -119,13 +122,13 @@ class EasyJobsWorker:
 
     def task(
         self,
-        namespace: str = 'DEFAULT',
         on_failure: str =  None, # on failure job
         retry_policy: str =  'retry_once', # retry_once, retry_always, never
         run_after: str = None,
         subprocess: bool = False,
     ):
 
+        namespace = self.jobs_queue
         worker_id = '_'.join(self.rpc_proxy.session_id.split('-'))
 
         def job_register(func):
@@ -211,8 +214,6 @@ class EasyJobsWorker:
 
             sig_config = {'name': func_name, 'sig': get_signature_as_dict(func)}
             
-
-            #asyncio.create_task(self.add_task(namespace, func_name, sig_config))
             self.local_tasks.append({'name': func_name, 'namespace': namespace, 'sig': sig_config})
 
             return job
