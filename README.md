@@ -124,27 +124,40 @@ Tasks can be registered on a Manager or Worker by using referencing the <instanc
 <br>
 ### Task register arguments:
 
-- namespace - Defaults to 'DEFAULT' - Determines what queue task is registered within, methods can be registered within multiple namespaces. 
-- on_failure - Default Unspecified - Will attempt to create with on_failure=<task_name> if task run resulted in a failure
-- retry_policy - Defaults retry_policy='retry_once',  with possible values [retry_always, never]
-- run_after - Defaults Unspecified - Will create job with run_after=<task_name> using results of current task as argument for run_afer task.
-- subprocess - Defaults False - Defines whether a task should be created via a subprocess 
+- <b>namespace</b> - Manager only, Defaults to 'DEFAULT' - Determines what queue task is registered within, methods can be registered within multiple namespaces. Workers inherit jobs_queue, from creation. 
+- <b>on_failure</b>  - Default Unspecified - Will attempt to create with on_failure=<task_name> if task run resulted in a failure
+- <b>retry_policy</b>  - Defaults retry_policy='retry_once',  with possible values [retry_always, never]
+- run_after</b>  - Defaults Unspecified - Will create job with run_after=<task_name> using results of current task as argument for run_afer task.
+- <b>subprocess</b>  - Defaults False - Defines whether a task should be created via a subprocess 
 <br>
 
 ```python
-@worker.task(namespace='finance')
+@worker.task(on_failure='send_failure_email')
 async def finance_work(employee_id: str, employee_data: dict):
     """
     do finance work
     """
     return finance_results
 
-@manager.task()
+@worker.task(retry_policy='always')
+async def send_failure_email(reason):
+    # send email with reason
+    return f"email sent for {reason}"
+
+
+@manager.task(namespace="general", run_after='more_general_work')
 async def general_work(general_data: dict):
     """
     do general work
     """
     return general_results
+
+@manager.task(namespace="general")
+async def more_general_work(general_results):
+    # extra work on general_results
+    return f"more_general_results"
+
+
 ```
 #
 ## Note: Considerations with non-async Tasks
