@@ -54,11 +54,14 @@ async def startup():
 # Manager - Jobs Runner
 # job_manager.py
 
-import asyncio
+import asyncio, os
 from easyjobs.manager import EasyJobsManager
 from fastapi import FastAPI
 
 server = FastAPI()
+
+#Optional - Specify job-manager.db location
+os.environ['DB_PATH'] = '/mnt/jobs_database/'
 
 @server.on_event('startup')
 async def startup():
@@ -143,8 +146,9 @@ async def finance_work(employee_id: str, employee_data: dict):
 async def send_failure_email(reason):
     # send email with reason
     return f"email sent for {reason}"
+```
 
-
+```python
 @manager.task(namespace="general", run_after='more_general_work')
 async def general_work(general_data: dict):
     """
@@ -156,8 +160,6 @@ async def general_work(general_data: dict):
 async def more_general_work(general_results):
     # extra work on general_results
     return f"more_general_results"
-
-
 ```
 #
 ## Note: Considerations with non-async Tasks

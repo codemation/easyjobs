@@ -115,8 +115,10 @@ class EasyJobsManager():
 
         log.debug(f"JOB_MANAGER SETUP: rpc_server created")
 
+        db_path = 'job_manager.db' if not 'DB_PATH' in os.environ else f"{os.environ['DB_PATH']}/job_manager.db"
+
         database = await data.Database.create(
-            database='job_manager.db',
+            database=db_path,
             log=rpc_server.log,
             cache_enabled=True,
             debug=debug
