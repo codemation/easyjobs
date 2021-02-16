@@ -398,7 +398,7 @@ class EasyJobsManager():
         if not queue == 'job_manager':
             # removing current openapi schema to allow refresh
             self.rpc_server.server.openapi_schema = None
-            self.api_router.post(f'/task/{task_name}', tags=[queue])(task_proxy)
+            self.api_router.post(f'/{queue}/task/{task_name}', tags=[queue])(task_proxy)
 
         self.rpc_server.origin(task_proxy, namespace=queue)
         return f"{task_name} registered"
