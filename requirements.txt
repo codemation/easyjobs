@@ -1,3 +1,4 @@
 easyrpc>=0.238
 aiopyql>=0.351
 aio-pika
+easyschedule

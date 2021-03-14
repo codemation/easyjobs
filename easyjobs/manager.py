@@ -3,12 +3,13 @@ import uuid, json, time, os, datetime
 import logging
 import random
 import subprocess as sp
-
+from typing import Optional, Callable
 from easyrpc.server import EasyRpcServer
 from easyrpc.register import Coroutine, create_proxy_from_config, get_signature_as_dict
 from fastapi import FastAPI
 from aiopyql import data
 from easyjobs.api.manager_api import api_setup
+from easyschedule import EasyScheduler
 
 
 async def database_setup(job_manager, server, db):
@@ -59,6 +60,7 @@ class EasyJobsManager():
         self,
         rpc_server: EasyRpcServer,
         database: data.Database,
+        scheduler: EasyScheduler,
         broker_type: str = None,
         broker_path: str = None,
         api_router = None
@@ -74,6 +76,7 @@ class EasyJobsManager():
         self.job_queues = {}
         self.job_results = {}
         self.db = database
+        self.scheduler = scheduler
 
         self.workers = []
         self.worker_instances = set()
@@ -126,10 +129,12 @@ class EasyJobsManager():
         # trigger table creation - if needed
         log.debug(f"JOB_MANAGER SETUP: database created")
         
+        scheduler = EasyScheduler(logger=rpc_server.log)
 
         job_manager = cls(
             rpc_server,
             database,
+            scheduler,
             broker_type,
             broker_path,
             api_router
@@ -153,6 +158,9 @@ class EasyJobsManager():
 
         await job_manager.load_results_queue()
         log.debug(f"JOB_MANAGER SETUP: job_manager setup 4 completed")
+
+        await job_manager.setup_scheduler()
+        log.debug(f"JOB_MANAGER SETUP: job_manager setup 5 completed")
 
         @rpc_server.origin(namespace='manager')
         async def add_job_to_queue(queue: str, job: dict):
@@ -179,8 +187,8 @@ class EasyJobsManager():
             return await job_manager.add_job(job)
         
         @rpc_server.origin(namespace='manager')
-        async def add_task(queue, task_name, sig_config):
-            return await job_manager.add_task(queue, task_name, sig_config)
+        async def add_task(queue, task_name, sig_config, schedule, default_args):
+            return await job_manager.add_task(queue, task_name, sig_config, schedule, default_args)
 
         @rpc_server.origin(namespace='manager')
         async def create_task_subprocess_callback(request_id, worker_id):
@@ -278,6 +286,13 @@ class EasyJobsManager():
                 cron()
             )
         )
+    async def setup_scheduler(self):
+
+        # start scheduler
+        self.workers.append(
+            asyncio.create_task(self.scheduler.start())
+        )
+        self.log.warning(f"JOBS_MANAGER - scheduler started")
     
     async def add_worker_to_pool(self, worker_id):
         """
@@ -367,7 +382,14 @@ class EasyJobsManager():
         return f"task_subprocess_callback created for request_id: {request_id} - worker_id: {worker_id}"
 
 
-    async def add_task(self, queue: str, task_name: str, sig_config: dict):
+    async def add_task(
+        self, 
+        queue: str, 
+        task_name: str, 
+        sig_config: dict,
+        schedule: str,
+        default_args: dict
+    ):
         """
         called by workers to ensure task load balancer exists for 
         registered task
@@ -399,6 +421,12 @@ class EasyJobsManager():
             # removing current openapi schema to allow refresh
             self.rpc_server.server.openapi_schema = None
             self.api_router.post(f'/{queue}/task/{task_name}', tags=[queue])(task_proxy)
+            if not schedule is None:
+                self.scheduler.schedule(
+                    task_proxy,
+                    schedule=schedule,
+                    default_args=default_args
+                )
 
         self.rpc_server.origin(task_proxy, namespace=queue)
         return f"{task_name} registered"
@@ -406,13 +434,22 @@ class EasyJobsManager():
     def task(
         self, 
         namespace: str = 'DEFAULT',
-        on_failure: str = None, # on failure job
-        retry_policy: str =  'retry_once', # retry_once, retry_always, never
-        run_after: str = None,
-        subprocess: bool = False
-    ):
+        on_failure: Optional[str] = None, # on failure job
+        retry_policy: Optional[str] =  'retry_once', # retry_once, retry_always, never
+        run_after: Optional[str] = None,
+        subprocess: Optional[bool] = False,
+        schedule: Optional[str] = None,
+        default_args: Optional[dict] = None
+    ) -> Callable:
 
         worker_id = '_'.join(self.rpc_server.server_id.split('-'))
+
+        if default_args:
+            if not 'args' in default_args:
+                default_args['args'] = []
+            if not 'args' in default_args:
+                default_args['kwargs'] = {}
+            
 
         def job_register(func):
             self.rpc_server.origin(func, namespace=f'local_{namespace}')
@@ -498,7 +535,7 @@ class EasyJobsManager():
 
             sig_config = {'name': func_name, 'sig': get_signature_as_dict(func)}
 
-            asyncio.create_task(self.add_task(namespace, func_name, sig_config))
+            asyncio.create_task(self.add_task(namespace, func_name, sig_config, schedule, default_args))
 
             return job
         return job_register
