@@ -12,7 +12,7 @@
 
     $ source easy-jobs-env/bin/activate
 
-    (easy-rpc-env)$ pip install easyjobs
+    (easy-job-env)$ pip install easyjobs
 
 ### Supported Brokers - Pull Jobs
 - rabbitmq
