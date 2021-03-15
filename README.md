@@ -10,7 +10,7 @@ A jobs framework for managing and  distributing  async / non-async tasks
 
     (easy-rpc-env)$ pip install easyjobs
 #
-Documentation: [easyjobs documentation](https://codemation.github.io/easyjobs/)
+Documentation: [easyjobs documentation](https://codemation.github.io/easyjobs/site/)
 
 #
 
