@@ -156,7 +156,7 @@
 
 $ source easy-jobs-env/bin/activate
 
-(easy-rpc-env)$ pip install easyjobs
+(easy-job-env)$ pip install easyjobs
 </code></pre>
 <h3 id="supported-brokers-pull-jobs">Supported Brokers - Pull Jobs</h3>
 <ul>
@@ -180,7 +180,6 @@ from fastapi import FastAPI
 
 server = FastAPI()
 
-#Optional - Specify job-manager.db location
 os.environ['DB_PATH'] = '/mnt/jobs_database/'
 
 @server.on_event('startup')
@@ -191,11 +190,6 @@ async def startup():
         server_secret='abcd1234'
     )
 
-    @job_manager.task()
-    async def basic_job(arg1, arg2, arg3, *args):
-        print(f&quot;basic_job: {arg1} {arg2} {arg3} - args {args}&quot;)
-        await asyncio.sleep(2)
-        return arg1, arg2, arg3
 </code></pre>
 <h3 id="rabbitmq-broker">RabbitMq Broker</h3>
 <pre><code class="language-python"># Manager - Jobs Runner
@@ -522,5 +516,5 @@ if __name__ == '__main__':
 
 <!--
 MkDocs version : 1.1.2
-Build Date UTC : 2021-03-15 14:44:51.229586+00:00
+Build Date UTC : 2021-03-15 15:19:12.512857+00:00
 -->
