@@ -44,7 +44,7 @@ async def message_consumer(manager, queue):
             job = await message_generator.asend(None)
             if job == 'empty':
                 manager.log.debug(f"easyjobs queue {queue} empty, sleeping(5)")
-                await asyncio.sleep(5)
+                await asyncio.sleep(1)
             
             if job and 'job' in job:
                 job = job['job']
