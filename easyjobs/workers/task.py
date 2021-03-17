@@ -11,7 +11,7 @@ async def job(mgr_addr, mgr_port, mgr_secret, request_id, results):
         namespace='manager'
     )
     await asyncio.sleep(0.5)
-    await proxy[f'add_task_subprocess_results'](request_id, results)
+    await proxy[f'add_callback_results'](request_id, results)
     
 def subprocess(f):
     print(f"task subprocess called with {sys.argv}")

@@ -13,46 +13,44 @@ from easyschedule import EasyScheduler
 
 
 async def database_setup(job_manager, server, db):
-    if not 'job_queue' in db.tables:
-        await db.create_table(
-            'job_queue',
-            [
-                ('request_id', str, 'UNIQUE'),
-                ('namespace', str),
-                ('job', str),
-                ('job_id', str)
-            ],
-            'request_id',
-            cache_enabled=True
-        )
-    if not 'jobs' in db.tables:
-        await db.create_table(
-            'jobs',
-            [
-                ('job_id', str, 'UNIQUE'),
-                ('namespace', str),
-                ('node_id', str),
-                ('status', str),
-                ('name', str),
-                ('args', str),
-                ('kwargs', str),
-                ('retry_policy', str),
-                ('on_failure', str),
-                ('run_after', str)
-            ],
-            'job_id',
-            cache_enabled=True
-        )
-    if not 'results' in db.tables:
-        await db.create_table(
-            'results',
-            [
-                ('job_id', str, 'UNIQUE'),
-                ('results', str)
-            ],
-            'job_id',
-            cache_enabled=True
-        )
+    await db.create_table(
+        'job_queue',
+        [
+            ('request_id', str, 'UNIQUE'),
+            ('namespace', str),
+            ('job', str),
+            ('job_id', str)
+        ],
+        'request_id',
+        cache_enabled=True
+    )
+    await db.create_table(
+        'jobs',
+        [
+            ('job_id', str, 'UNIQUE'),
+            ('namespace', str),
+            ('node_id', str),
+            ('status', str),
+            ('name', str),
+            ('args', str),
+            ('kwargs', str),
+            ('retry_policy', str),
+            ('on_failure', str),
+            ('run_before', str),
+            ('run_after', str)
+        ],
+        'job_id',
+        cache_enabled=True
+    )
+    await db.create_table(
+        'results',
+        [
+            ('job_id', str, 'UNIQUE'),
+            ('results', str)
+        ],
+        'job_id',
+        cache_enabled=True
+    )
     
     
 class EasyJobsManager():
@@ -92,6 +90,9 @@ class EasyJobsManager():
 
         self.tasks = {}
         self.task_subprocess_results = {}
+        self.task_results = {}
+
+        self.callback_results = {}
         
     @classmethod
     async def create(
@@ -183,6 +184,12 @@ class EasyJobsManager():
                     job['args'] = {'args': job['args']}
                 if not 'kwargs' in job:
                     job['kwargs'] = {}
+                for list_item in {'run_before', 'run_after'}:
+                    if not job[list_item]:
+                        job[list_item] = {list_item: []}
+                    else:
+                        job[list_item] = {list_item: job[list_item]}
+
 
             return await job_manager.add_job(job)
         
@@ -195,16 +202,22 @@ class EasyJobsManager():
             return await job_manager.create_task_subprocess_callback(request_id, worker_id)
 
         @rpc_server.origin(namespace='manager')
-        async def add_task_subprocess_results(request_id, results):
-            return await job_manager.add_task_subprocess_results(request_id, results)
+        async def create_job_result_callback(job_id, worker_id):
+            return await job_manager.create_job_result_callback(job_id, worker_id)
         
         @rpc_server.origin(namespace='manager')
-        async def add_task_subprocess_results_local(request_id, results):
-            return await job_manager.add_task_subprocess_results(request_id, results)
+        async def add_callback_results(request_id, results):
+            return await job_manager.add_callback_results(request_id, results)
 
         @rpc_server.origin(namespace='manager')
         async def get_job_from_queue(queue):
             return await job_manager.get_job_from_queue_nowait(queue)
+        
+        @rpc_server.origin(namespace='manager')
+        async def create_get_job_from_queue_callback(queue, request_id, worker_id):
+            return await job_manager.create_get_job_from_queue_callback(
+                queue, request_id, worker_id
+            )
             
         @rpc_server.origin(namespace='job_results')
         @rpc_server.origin(namespace='manager')
@@ -358,30 +371,6 @@ class EasyJobsManager():
         except IndexError:
             return worker_funcs
 
-    async def add_task_subprocess_results(self, request_id, results):
-        await self.task_subprocess_results[request_id].put(results)
-        self.log.debug(f"added {request_id} results")
-        return f"added {request_id} results"
-
-    async def task_subprocess_callback(self, request_id, worker_id):
-        """
-        waits on a task_subprocess to complete then sendsresults
-        """
-        try:
-            results = await self.task_subprocess_results[request_id].get()
-            await self.rpc_server['manager'][f'add_task_subprocess_results_{worker_id}'](request_id, results)
-            return f"added results for request_id {request_id} to worker_id {worker_id}"
-
-        except Exception as e:
-            if not isinstance(e, asyncio.CancelledError):
-                self.log.exception(f"error with task_subprocess_callback for request_id: {request_id}")
-
-    async def create_task_subprocess_callback(self, request_id, worker_id):
-        self.task_subprocess_results[request_id] = asyncio.Queue()
-        asyncio.create_task(self.task_subprocess_callback(request_id, worker_id))
-        return f"task_subprocess_callback created for request_id: {request_id} - worker_id: {worker_id}"
-
-
     async def add_task(
         self, 
         queue: str, 
@@ -422,11 +411,12 @@ class EasyJobsManager():
             self.rpc_server.server.openapi_schema = None
             self.api_router.post(f'/{queue}/task/{task_name}', tags=[queue])(task_proxy)
             if not schedule is None:
-                self.scheduler.schedule(
-                    task_proxy,
-                    schedule=schedule,
-                    default_args=default_args
-                )
+                if not task_proxy.__name__ in self.scheduler.scheduled_tasks:
+                    self.scheduler.schedule(
+                        task_proxy,
+                        schedule=schedule,
+                        default_args=default_args
+                    )
 
         self.rpc_server.origin(task_proxy, namespace=queue)
         return f"{task_name} registered"
@@ -436,7 +426,8 @@ class EasyJobsManager():
         namespace: str = 'DEFAULT',
         on_failure: Optional[str] = None, # on failure job
         retry_policy: Optional[str] =  'retry_once', # retry_once, retry_always, never
-        run_after: Optional[str] = None,
+        run_before: Optional[list] = None,
+        run_after: Optional[list] = None,
         subprocess: Optional[bool] = False,
         schedule: Optional[str] = None,
         default_args: Optional[dict] = None
@@ -466,9 +457,9 @@ class EasyJobsManager():
                     'kwargs': kwargs,
                     'retry_policy': retry_policy,
                     'on_failure': on_failure,
+                    'run_before': run_before,
                     'run_after': run_after
                 }
-                self.log.warning(f"new_job: {new_job}")
                 await self.new_job_queue.put(new_job)
                 return job_id
 
@@ -490,7 +481,8 @@ class EasyJobsManager():
                 async def task(*args, **kwargs):
                     request_id = str(uuid.uuid1())
                     self.log.debug(f"task started - subprocess - for {func_name}")
-                    self.task_subprocess_results[request_id] = asyncio.Queue()
+                    #self.task_subprocess_results[request_id] = asyncio.Queue()
+                    self.callback_results[request_id] = asyncio.Queue()
  
                     # start task_subprocess
                     arguments = json.dumps({'args': list(args), 'kwargs': kwargs})
@@ -508,7 +500,7 @@ class EasyJobsManager():
                     )
                     # create_task_subprocess_callback - use 
                     try:
-                        return await self.task_subprocess_results[request_id].get()
+                        return await self.callback(request_id)
                     except Exception as e:
                         if not isinstance(e, asyncio.CancelledError):
                             return f'task {func_name} failed'
@@ -579,7 +571,13 @@ class EasyJobsManager():
                     self.worker(queue)
                 )
             )
-    
+    async def create_get_job_from_queue_callback(self, queue, request_id, worker_id):
+        if not queue in self.job_queues:
+            await self.add_job_queue(queue)
+        get_job_from_queue = self.get_job_from_queue(queue)
+        await self.create_callback(get_job_from_queue, request_id, worker_id)
+        return f"get_job_from_queue callback"
+
     async def get_job_from_queue(self, queue):
         return await self.job_queues[queue].get()
     async def get_job_from_queue_nowait(self, queue):
@@ -611,7 +609,6 @@ class EasyJobsManager():
             args = []
         if not kwargs:
             kwargs = {}
-        self.log.debug(f"run_job called for {name} in queue {queue} with args: {args} kwargs {kwargs}")
         job = self.get_random_worker_task(queue, name, 'job')
         if not type(job) is list:
             return await job(*args, **kwargs)
@@ -645,7 +642,6 @@ class EasyJobsManager():
         while True:
             try:
                 job = await self.new_job_queue.get()
-                self.log.warning(f"job_sender: job {job}")
                 queue = job['namespace']
                 await self.add_job(job)
             except Exception as e:
@@ -665,7 +661,24 @@ class EasyJobsManager():
                 job_id = job['job_id']
                 
                 self.log.debug(f"worker pulled {job} from queue")
+    
+                if job['run_before']:
+                    tasks = []
+                    for task in job['run_before']:
+                        if task in self.rpc_server[queue]:
+                            before_job_id = await self.run_job(queue, task)
+                            self.log.debug(f"RUN_BEFORE: request_id - {before_job_id}")
+                            tasks.append(before_job_id)
+                    await self.update_job_status(
+                        job_id, 'waiting', self.rpc_server.server_id
+                    )
+                    for before_job_id in tasks:
+                        result = await self.get_job_result(before_job_id)
+                        self.log.debug(f"RUN_BEFORE: request_id - {before_job_id} result: {result}")
 
+                await self.update_job_status(
+                    job_id, 'running', self.rpc_server.server_id
+                )
                 # start job
                 name, args, kwargs = job['name'], job['args'], job['kwargs']
 
@@ -706,7 +719,8 @@ class EasyJobsManager():
                 await self.delete_job(job_id)
 
                 if job['run_after'] and not results == f'task {name} failed':
-                    await self.run_job(queue, job['run_after'], kwargs=results)
+                    for job_name in job['run_after']:
+                        await self.run_job(queue, job_name, kwargs=results)
                 
             except Exception as e:
                 if isinstance(e, asyncio.CancelledError):
@@ -725,6 +739,7 @@ class EasyJobsManager():
             'kwargs': {'kwargs': 'vals'}
         }
         """
+        self.log.debug(f"add_job: {job}")
         job_id = str(uuid.uuid1()) if not 'job_id' in job else job['job_id']
 
         new_job = {
@@ -732,6 +747,11 @@ class EasyJobsManager():
         }
         new_job.update(job)
 
+        for list_item in {'run_before', 'run_after'}:
+            if not job[list_item]:
+                job[list_item] = {list_item: []}
+            else:
+                job[list_item] = {list_item: job[list_item]}
 
         await self.db.tables['jobs'].insert(
             status='queued',
@@ -754,26 +774,24 @@ class EasyJobsManager():
         )
         await self.job_results[job_id].put(results)
     async def get_job_result_by_request_id(self, request_id):
-        self.log.warning(f"get_job_result called for request_id: {request_id}")
         start = time.time()
 
-        while time.time() - start < 5.0:
+        while time.time() - start < 60.0:
             queued_job = await self.db.tables['job_queue'][request_id]
             if queued_job is None:
                 return f"No queued job with request_id {request_id} found" 
             if queued_job['job_id']:
-                return await self.get_job_result(queued_job['job_id'])
-            await asyncio.sleep(time.time() - start)
+                result = await self.get_job_result(queued_job['job_id'])
+                self.log.debug(f"get_job_result_by_request_id completed in {time.time() - start:2f} s")
+            await asyncio.sleep(1)
             continue
         return f"timeout waiting for request {request_id} in queue, job not created yet"
 
-
     async def get_job_result(self, job_id):
-        self.log.warning(f"get_job_result called for job_id: {job_id}")
         start = time.time()
         while time.time() - start < 5.0:
             if not job_id in self.job_results:
-                await asyncio.sleep(time.time() - start)
+                await asyncio.sleep(1)
                 continue
             break
 
@@ -785,3 +803,54 @@ class EasyJobsManager():
         await self.db.tables['job_queue'].delete(where={'job_id': job_id})
         del self.job_results[job_id]
         return result
+
+    async def create_job_result_callback(self, job_id, worker_id):
+        """
+        accepts request_id returned by triggering a task
+        """
+        get_job_result = self.get_job_result(job_id)
+        await self.create_callback(get_job_result, job_id, worker_id)
+        return f"job_result callback created"
+
+    async def create_task_subprocess_callback(self, request_id, worker_id):
+        """
+        invoked by workers to prepare manager for a subprocess task will be reporting
+        results
+        """
+        get_subprocess_result = self.callback(request_id)
+        await self.create_callback(get_subprocess_result, request_id, worker_id)
+        return f"task_subprocess_callback created for request_id: {request_id} - worker_id: {worker_id}"
+
+    async def create_callback(self, coro: Coroutine, request_id: str, worker_id: str):
+        self.callback_results[request_id] = asyncio.Queue()
+        async def call_back():
+            try:
+                results = await coro
+                await self.rpc_server['manager'][f'add_callback_results_{worker_id}'](request_id, results)
+            except Exception as e:
+                if not isinstance(e, asyncio.CancelledError):
+                    self.log.exception(f"error with callback for request_id: {request_id}")
+
+        asyncio.create_task(call_back())
+        return f"callback created - request_id: {request_id} - worker_id: {worker_id}"
+
+    async def add_callback_results(self, request_id, results):
+        """
+        used to add results to a pending callback
+        """
+        await self.callback_results[request_id].put(results)
+        return f"added callback result for request_id {request_id}"
+
+    async def callback(self, request_id):
+        """
+        awaits results to be put to queue matching request_id via add_callback_results()
+        then cleans up queue & returns results
+        """
+        try:
+            result = await self.callback_results[request_id].get()
+            del self.callback_results[request_id]
+            return result
+        except Exception as e:
+            if not isinstance(e, asyncio.CancelledError):
+                self.log.exception(f"error with callback for request_id: {request_id}")
+

@@ -29,9 +29,7 @@ class EasyJobsWorker:
         # queue of jobs to be sent to job_manager
         self.new_job_queue = asyncio.Queue()
 
-        self.task_subprocess_results = {}
-        
-        self.task_callback_results = {}
+        self.callback_results = {}
 
         # list of tasks which should be created via add_task
         self.local_tasks = []
@@ -43,6 +41,7 @@ class EasyJobsWorker:
             if the local task does not exist in the namespace, the manager might be down or
             restarting
             """
+            #restart_workers = False
             try:
                 for task in self.local_tasks:
                     namespace = task['namespace']
@@ -51,11 +50,17 @@ class EasyJobsWorker:
                     schedule = task['schedule']
                     default_args = task['default_args']
                     if not name in self.rpc_server[namespace]:
+                        #restart_workers = True
                         self.log.warning(f"task {name} not found in {namespace} - calling add_task on manager")
                         result = await self.add_task(namespace, name, sig_config, schedule, default_args)
                         self.log.warning(f"add_task result: {result}")
             except Exception as e:
                 self.log.error(f"task_monitor - error checking local_tasks, maybe the JobsManager is down / restarting")
+                for worker in self.workers:
+                    worker.cancel()
+                self.workers = []
+                await self.start_queue_workers(self.jobs_queue)
+
         
         # run task_monitor at 30 sec intervals
         self.rpc_proxy.run_cron(task_monitor, 30)
@@ -102,12 +107,11 @@ class EasyJobsWorker:
 
         await rpc_server['manager']['add_worker_to_pool'](rpc_proxy.session_id)
 
-        
-        async def add_task_subprocess_results(request_id, results):
-            return await jobs_worker.add_task_subprocess_results(request_id, results)
-        
-        add_task_subprocess_results.__name__ = f'add_task_subprocess_results_{worker_id}'
-        rpc_server.origin(add_task_subprocess_results, namespace='manager')
+        async def add_callback_results(request_id, results):
+            return await jobs_worker.add_callback_results(request_id, results)
+
+        add_callback_results.__name__ = f'add_callback_results_{worker_id}'
+        rpc_server.origin(add_callback_results, namespace='manager')
 
 
         jobs_worker = cls(
@@ -125,7 +129,8 @@ class EasyJobsWorker:
         self,
         on_failure: Optional[str] =  None, # on failure job
         retry_policy: Optional[str] =  'retry_once', # retry_once, retry_always, never
-        run_after: Optional[str] = None,
+        run_before: Optional[list] = None,
+        run_after: Optional[list] = None,
         subprocess: Optional[bool] = False,
         schedule: Optional[str] = None,
         default_args: Optional[dict] = None
@@ -149,12 +154,12 @@ class EasyJobsWorker:
                     'kwargs': kwargs,
                     'retry_policy': retry_policy,
                     'on_failure': on_failure,
+                    'run_before': run_before,
                     'run_after': run_after
                 }
-                self.log.debug(f"new_job: {new_job}")
                 await self.new_job_queue.put(new_job)
-                self.log.debug(f"added new job {new_job['name']} to job_sender queue")
                 return job_id
+
             if subprocess:
                 REQUIRED_ENV_VARS = {'WORKER_TASK_DIR'}
                 for var in REQUIRED_ENV_VARS:
@@ -170,7 +175,7 @@ class EasyJobsWorker:
                     )
                 async def task(*args, **kwargs):
                     request_id = str(uuid.uuid1())
-                    self.task_subprocess_results[request_id] = asyncio.Queue()
+                    self.callback_results[request_id] = asyncio.Queue()
  
                     # start task_subprocess
                     arguments = json.dumps({'args': list(args), 'kwargs': kwargs})
@@ -189,7 +194,7 @@ class EasyJobsWorker:
                     await self.create_task_subprocess_callback(request_id, worker_id)
 
                     try:
-                        return await self.task_subprocess_callback(request_id)
+                        return await self.callback(request_id)
                     except Exception as e:
                         if not isinstance(e, asyncio.CancelledError):
                             return f'task {func_name} failed'
@@ -226,33 +231,35 @@ class EasyJobsWorker:
 
             return job
         return job_register
-    async def add_task_callback_result(self, request_id, results):
-        """
-        when task is triggered, callback id is issued to requestor 
-        this id can be used to monitor the associated task_callback_results
-        queue for results
-        """
-        await self.task_callback_results[request_id].put(results)
-        return f"{request_id} results added"
     
-
     async def create_task_subprocess_callback(self, request_id, worker_id):
-        return await self.rpc_server['manager']['create_task_subprocess_callback'](request_id, worker_id)        
+        return await self.rpc_server['manager']['create_task_subprocess_callback'](request_id, worker_id)
+    
+    async def create_callback(self, request_id):
+        worker_id = '_'.join(self.rpc_proxy.session_id.split('-'))
+        return await self.rpc_server['manager']['create_callback'](request_id, worker_id)
 
-    async def add_task_subprocess_results(self, request_id, results):
-        await self.task_subprocess_results[request_id].put(results)
-        self.log.debug(f"added {request_id} results")
-        return f"added {request_id} results"
+    async def add_callback_results(self, request_id, results):
+        await self.callback_results[request_id].put(results)
+        return f"added callback result for request_id {request_id}"
 
-    async def task_subprocess_callback(self, request_id):
+    async def callback(self, request_id):
         """
-        waits on a task_subprocess to complete then sendsresults
+        awaits results to be put to queue matching request_id via add_callback_results()
+        then cleans up queue & returns results
         """
         try:
-            return await self.task_subprocess_results[request_id].get()
+            result = await self.callback_results[request_id].get()
+            del self.callback_results[request_id]
+            return result
         except Exception as e:
             if not isinstance(e, asyncio.CancelledError):
-                self.log.exception(f"error with task_subprocess_callback for request_id: {request_id}")
+                self.log.exception(f"error with callback for request_id: {request_id}")
+
+    async def create_job_result_callback(self, job_id):
+        self.callback_results[job_id] = asyncio.Queue()
+        worker_id = '_'.join(self.rpc_proxy.session_id.split('-'))
+        return await self.rpc_server['manager']['create_job_result_callback'](job_id, worker_id)
                 
     async def add_task(self, queue, task_name, sig_config, schedule, default_args):
         return await self.rpc_server['manager']['add_task'](queue, task_name, sig_config, schedule, default_args)
@@ -272,6 +279,17 @@ class EasyJobsWorker:
 
     async def get_job_from_queue(self, queue):
         return await self.rpc_server['manager']['get_job_from_queue'](queue)
+
+    """
+    async def get_job_from_queue(self, queue):
+        request_id = str(uuid.uuid1())
+        self.callback_results[request_id] = asyncio.Queue()
+        worker_id = '_'.join(self.rpc_proxy.session_id.split('-'))
+        await self.rpc_server['manager']['create_get_job_from_queue_callback'](
+            queue, request_id, worker_id
+        )
+        return await self.callback(request_id)
+    """
     
     async def update_job_status(self, job_id: str, status: str, node_id: str = None):
         return await self.rpc_server['manager']['update_job_status'](
@@ -344,11 +362,9 @@ class EasyJobsWorker:
         self.log.warning(f"starting job_sender")
         while True:
             try:
-                self.log.debug(f"job_sender queue status: {self.new_job_queue}")
                 job = await self.new_job_queue.get()
                 queue = job['namespace']
-                await self.add_job_to_queue(queue, job)
-                self.log.debug(f"job_sender - added job {job['name']} to job_manager queue")
+                job_add_result = await self.add_job_to_queue(queue, job)
             except Exception as e:
                 if isinstance(e, asyncio.CancelledError):
                     break
@@ -357,6 +373,7 @@ class EasyJobsWorker:
 
     async def worker(self, queue):
         self.log.warning(f"worker started - for queue {queue}")
+        worker_id = '_'.join(self.rpc_proxy.session_id.split('-'))
         while True:
             try:
                 job = await self.get_job_from_queue(queue)
@@ -372,12 +389,32 @@ class EasyJobsWorker:
                     continue
 
                 job_id = job['job_id']
+
+                self.log.debug(f"worker pulled {job} from queue")
                 
+                if job['run_before']:
+                    tasks = []
+                    for task in job['run_before']:
+                        run_after = self.get_local_worker_task(queue, task, 'job')
+                        if not run_after is None:
+                            before_job_id = await run_after()
+                        else:
+                            before_job_id = await self.run_job(queue, task)
+                        await self.create_job_result_callback(before_job_id)
+                        tasks.append(before_job_id)
+
+                    await self.update_job_status(
+                        job_id, 'waiting', self.rpc_server.server_id
+                    )
+                    for before_job_id in tasks:
+                        await self.callback(before_job_id)
+                    
                 # mark running
                 await self.update_job_status(
                     job_id, 'running', self.rpc_server.server_id
                 )
                 self.log.debug(f"worker running job: {job}")
+
                 # start job
                 name, args, kwargs = job['name'], job['args'], job['kwargs']
 
@@ -415,14 +452,20 @@ class EasyJobsWorker:
                 await self.delete_job(job_id)
 
                 if job['run_after'] and not results == f'task {name} failed':
-                    run_after = self.get_local_worker_task(queue, job['run_after'], 'job')
-                    if not run_after is None:
-                        await run_after(**results)
-                    else:
-                        await self.run_job(queue, job['run_after'], kwargs=results)              
+                    for job_name in job['run_after']:
+                        run_after = self.get_local_worker_task(queue, job_name, 'job')
+                        if not run_after is None:
+                            await run_after(**results)
+                        else:
+                            await self.run_job(queue, job_name, kwargs=results)              
             except Exception as e:
                 if isinstance(e, asyncio.CancelledError):
                     break
                 self.log.exception(f"error in worker")
                 await asyncio.sleep(5)
         self.log.warning(f"worker exiting")
+
+    async def add_task_results(self, request_id, results):
+        await self.task_results[request_id].put(results)
+        self.log.debug(f"added {request_id} results")
+        return f"added {request_id} results"
