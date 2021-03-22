@@ -29,10 +29,13 @@ class EasyJobsWorker:
         # queue of jobs to be sent to job_manager
         self.new_job_queue = asyncio.Queue()
 
-        self.callback_results = {}
-
         # list of tasks which should be created via add_task
         self.local_tasks = []
+
+        self.callbacks_pending = 0
+        self.callback_status = asyncio.Queue()
+        self.callback_results = {}
+                    
 
         async def task_monitor():
             """
@@ -229,9 +232,46 @@ class EasyJobsWorker:
                 }
             self.local_tasks.append(job_config)
 
-            return job
+            async def run_job_and_get_result(*args, **kwargs):
+                job_id = await job(*args, **kwargs)
+                self.log.debug(f"run_job_and_get_result: job_id - {job_id}")
+                cb_create = await self.create_job_result_callback(job_id)
+                return await self.callback(job_id)
+                
+
+            return run_job_and_get_result
         return job_register
-    
+        
+    async def callback_monitor(self):
+        """
+        task which monitors pending callbacks & expands workers if needed
+        """
+
+        self.callbacks_pending = 0
+        self.callback_status = asyncio.Queue()
+        self.callback_results = {}
+
+        while True:
+            try:
+                status = await self.callback_status.get()
+                self.log.debug(f"CALLBACK_MONITOR: status {status} - {self.callbacks_pending} / {self.MAX_TASKS_PER_WORKER} ## {self.callback_results.keys()}")
+                if status == 'waiting':
+                    self.callbacks_pending+=1
+                if status == 'finished':
+                    self.callbacks_pending-=1
+                if self.callbacks_pending > self.MAX_TASKS_PER_WORKER:
+                    # add worker
+                    self.log.warning(f"CALLBACK_MONITOR: detected all workers - waiting, adding worker")
+                    self.MAX_TASKS_PER_WORKER+=1
+                    self.workers.append(
+                        asyncio.create_task(
+                            self.worker(self.jobs_queue)
+                        )
+                    )
+            except Exception as e:
+                if isinstance(e, asyncio.CancelledError):
+                    break
+                self.log.exception(f"callback_monitor error")
     async def create_task_subprocess_callback(self, request_id, worker_id):
         return await self.rpc_server['manager']['create_task_subprocess_callback'](request_id, worker_id)
     
@@ -249,8 +289,10 @@ class EasyJobsWorker:
         then cleans up queue & returns results
         """
         try:
+            await self.callback_status.put('waiting')
             result = await self.callback_results[request_id].get()
             del self.callback_results[request_id]
+            await self.callback_status.put('finished')
             return result
         except Exception as e:
             if not isinstance(e, asyncio.CancelledError):
@@ -277,6 +319,7 @@ class EasyJobsWorker:
     async def get_job_result(self, job_id):
         return await self.rpc_server['manager']['get_job_result'](job_id)
 
+    """
     async def get_job_from_queue(self, queue):
         return await self.rpc_server['manager']['get_job_from_queue'](queue)
 
@@ -289,7 +332,7 @@ class EasyJobsWorker:
             queue, request_id, worker_id
         )
         return await self.callback(request_id)
-    """
+    
     
     async def update_job_status(self, job_id: str, status: str, node_id: str = None):
         return await self.rpc_server['manager']['update_job_status'](
@@ -305,6 +348,12 @@ class EasyJobsWorker:
         self.workers.append(
             asyncio.create_task(self.job_sender())
         )
+        self.workers.append(
+            asyncio.create_task(self.worker_monitor())
+        )
+        #self.workers.append(
+        #    asyncio.create_task(self.callback_monitor())
+        #)
         self.log.warning(f"start_queue_workers - queue {queue} - callled ")
         for _ in range(self.MAX_TASKS_PER_WORKER):
             self.workers.append(
@@ -371,12 +420,41 @@ class EasyJobsWorker:
                 self.log.exception(f"error with job_sender")
         self.log.warning(f"job_sender exiting")
 
+    async def worker_monitor(self):
+
+        self.worker_status = asyncio.Queue()
+        self.workers_working = 0
+        self.log.warning(f"WORKER_MONITOR: starting")
+        while True:
+            try:
+                status = await self.worker_status.get()
+                
+                if status == 'working':
+                    self.workers_working+=1
+                if status == 'finished':
+                    self.workers_working-=1
+                self.log.debug(f"WORKER_MONITOR: working {self.workers_working} / {self.MAX_TASKS_PER_WORKER}")
+                if self.workers_working >= self.MAX_TASKS_PER_WORKER:
+                    self.log.warning(f"WORKER_MONITOR: detected max workers working, temporarily scaling by 1")
+                    self.workers.append(
+                        asyncio.create_task(
+                            self.worker(self.jobs_queue)
+                        )
+                    )
+            except Exception as e:
+                if isinstance(e, asyncio.CancelledError):
+                    break
+                self.log.exception(f"WORKER_MONITOR: error")
+        self.log.warning(f"WORKER_MONITOR: exiting")
+
+
     async def worker(self, queue):
         self.log.warning(f"worker started - for queue {queue}")
         worker_id = '_'.join(self.rpc_proxy.session_id.split('-'))
         while True:
             try:
                 job = await self.get_job_from_queue(queue)
+                await self.worker_status.put('working')
                 if not isinstance(job, dict):
                     if 'KeyError' in job and queue in job:
                         self.log.debug(f"worker queue empty - sleeping (2) sec")
@@ -457,7 +535,11 @@ class EasyJobsWorker:
                         if not run_after is None:
                             await run_after(**results)
                         else:
-                            await self.run_job(queue, job_name, kwargs=results)              
+                            await self.run_job(queue, job_name, kwargs=results)
+                await self.worker_status.put('finished')
+                if self.workers_working >= self.MAX_TASKS_PER_WORKER:
+                    self.log.warning(f"worker: exiting - max workers {self.MAX_TASKS_PER_WORKER} working / exceeded ")
+                    break      
             except Exception as e:
                 if isinstance(e, asyncio.CancelledError):
                     break
