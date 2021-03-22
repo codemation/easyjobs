@@ -93,6 +93,7 @@ class EasyJobsManager():
         self.task_results = {}
 
         self.callback_results = {}
+        self.worker_callbacks = {}
         
     @classmethod
     async def create(
@@ -318,6 +319,10 @@ class EasyJobsManager():
             if not worker_id in self.rpc_server.reverse_proxies:
                 self.log.warning(f"{worker_id} not found in {self.rpc_server.reverse_proxies}")
                 self.worker_instances.remove(worker_id)
+                if worker_id in self.worker_callbacks:
+                    for callback in self.worker_callbacks[worker_id]:
+                        callback.cancel()
+                    del self.worker_callbacks[worker_id]
             for namespace in self.rpc_server.server_proxies:
                 if worker_id in self.rpc_server.server_proxies[namespace]:
                     self.log.debug(f"reverse - proxy_funcs {self.rpc_server.server_proxies[namespace][worker_id].proxy_funcs}")
@@ -417,6 +422,7 @@ class EasyJobsManager():
                         schedule=schedule,
                         default_args=default_args
                     )
+        self.log.warning(f"add_task - default_args: {default_args}")
 
         self.rpc_server.origin(task_proxy, namespace=queue)
         return f"{task_name} registered"
@@ -438,9 +444,9 @@ class EasyJobsManager():
         if default_args:
             if not 'args' in default_args:
                 default_args['args'] = []
-            if not 'args' in default_args:
+            if not 'kwargs' in default_args:
                 default_args['kwargs'] = {}
-            
+        
 
         def job_register(func):
             self.rpc_server.origin(func, namespace=f'local_{namespace}')
@@ -831,7 +837,9 @@ class EasyJobsManager():
                 if not isinstance(e, asyncio.CancelledError):
                     self.log.exception(f"error with callback for request_id: {request_id}")
 
-        asyncio.create_task(call_back())
+        if not worker_id in self.worker_callbacks:
+            self.worker_callbacks[worker_id] = []
+        self.worker_callbacks[worker_id].append(asyncio.create_task(call_back())) 
         return f"callback created - request_id: {request_id} - worker_id: {worker_id}"
 
     async def add_callback_results(self, request_id, results):
