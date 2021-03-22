@@ -146,22 +146,50 @@ Start Worker - With 5 Workers
 
 ```Bash
 $ uvicorn --host 0.0.0.0 --port 8221 job_worker:server --workers=5
+```
+### Try it out"
+    Visit Job Manager uri: 
+    http://0.0.0.0:8220/docs
+<br>
 
+### Task Flow
+
+![](./docs/images/task-flow.png)
+
+```bash
 extract started
+get_data: ['http://stats']
+extract finished
 transform started
+transform finished
 load started
+load finished
+prepare_db - started
+deploy_environment - started
+prepare_db - completed
+deploy_environment - completed
+configure_environment - starting
+configure_environment - finished
+task subprocess called with ['/home/josh/Documents/python/easyjobs/compute.py', '0.0.0.0', '8220', 'abcd1234', 'c3076f7f-8b5c-11eb-9cba-6f9cd5406680', '{"args": [], "kwargs": {"data": {"a": 3, "b": 4, "c": 5}}}']
+starting heavy computation on {'a': 3, 'b': 4, 'c': 5}
+```
+
+### pipeline
+
+![](./docs/images/pipeline.png)
+
+```bash
+pipline started
 deploy_environment - started
 prepare_db - started
 deploy_environment - completed
 prepare_db - completed
-pre_compute - starting
-pre_compute - finished
-task subprocess called with ['/home/josh/Documents/python/easyjobs/compute.py', '0.0.0.0', '8220', 'abcd1234', '90226595-8779-11eb-a5cb-3bbcbb9b64eb', '{"args": [], "kwargs": {"data": {"a": 3, "b": 4, "c": 5}}}']
-starting heavy computation on {'a': 3, 'b': 4, 'c': 5}
-```
-### Try it out"
-    visit Job Manager uri: 
-    http://0.0.0.0:8220/docs
-<br>
+configure_environment - starting
+configure_environment - finished
+task subprocess called with ['/home/josh/Documents/python/easyjobs/compute.py', '0.0.0.0', '8220', 'abcd1234', '23970547-8b5d-11eb-9cba-6f9cd5406680', '{"args": [], "kwargs": {"data": {"test": "data"}}}']
+starting heavy computation on {'test': 'data'}
+pipline - result is {'result': 'I slept for 5 seconds - blocking - with data', 'test': 'data'} - finished
 
-![](./docs/images/easyjobs_openapi.png)
+```
+## EasyJobs - Manager API
+![](./docs/images/ETL_API.png)
