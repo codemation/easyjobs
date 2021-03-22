@@ -83,9 +83,7 @@ $ uvicorn --host <host_address> --port <tcp_port> job_manager:server
 ## Basic Usage - Worker
 
 ```python
-
-import os, time
-import asyncio
+import asyncio, os
 from fastapi import FastAPI
 from easyjobs.workers.worker import EasyJobsWorker
 
@@ -100,42 +98,81 @@ async def setup():
         manager_port=8220,
         manager_secret='abcd1234',
         jobs_queue='ETL',
+        max_tasks_per_worker=5
     )
 
     every_minute = '* * * * *'
-    default_args = {'args': ['http://stats']}
+    default_args = {'kwargs': {'url': ['http://stats']}}
 
     async def get_data(url):
+        print(f"get_data: {url}")
         return {'a': 1, 'b': 2, 'c': 3}
     async def load_db(data: dict):
-        await db.tables['transformed'].insert(**data)
+        #await db.tables['transformed'].insert(**data)
+        return f"data {data} loaded to db"
+    async def send_email(address: str, message: str):
+        return f"email sent to {address}"
 
-    @worker.task(run_after='transform', schedule=every_minute, default_args=default_args)
+    @worker.task(run_after=['transform'], schedule=every_minute, default_args=default_args)
     async def extract(url: str):
+        print(f"extract started")
         data = await get_data(url)
+        print(f"extract finished")
         return {'data': data}
     
-    @worker.task(run_after='load')
+    @worker.task(run_after=['load'])
     async def transform(data: dict):
+        print(f"transform started")
         for k in data.copy():
             data[k] = int(data[k]) + 2
+        print(f"transform finished")
         return {'data': data}
 
-    @worker.task(on_failure='failure_notify')
+    @worker.task(on_failure='failure_notify', run_after=['compute'])
     async def load(data):
+        print(f"load started")
         await load_db(data)
-        return f"data loaded"
+        print(f"load finished")
+        return {'data': data}
 
     @worker.task()
     async def failure_notify(job_failed):
         await send_email('admin@company.io', job_failed)
         return job_failed
 
-    os.environ['WORKER_TASK_DIR'] = '/mnt/subprocesses'
+    @worker.task()
+    async def deploy_environment():
+        print(f"deploy_environment - started")
+        await asyncio.sleep(5)
+        print(f"deploy_environment - completed")
+        return f"deploy_environment - completed"
 
-    @worker.task(subprocess=True)
+    @worker.task()
+    async def prepare_db():
+        print(f"prepare_db - started")
+        await asyncio.sleep(5)
+        print(f"prepare_db - completed")
+        return f"prepare_db - completed"
+
+    @worker.task(run_before=['deploy_environment', 'prepare_db'])
+    async def configure_environment():
+        print(f"configure_environment - starting")
+        await asyncio.sleep(5)
+        print(f"configure_environment - finished")
+        return f"configure_environment - finished"
+
+    os.environ['WORKER_TASK_DIR'] = '/home/josh/Documents/python/easyjobs'
+
+    @worker.task(subprocess=True, run_before=['configure_environment'])
     async def compute(data: dict):
         pass
+
+    @worker.task()
+    async def pipeline():
+        print(f"pipline started")
+        result = await compute(data={'test': 'data'})
+        print(f"pipline - result is {result} - finished")
+        return result
 
 ```
 Start Worker - With 5 Workers
@@ -148,8 +185,10 @@ $ uvicorn --host <host_addr> --port <port> job_worker:server --workers=5
     http://0.0.0.0:8220/docs
 <br>
 
-![](./images/easyjobs_openapi.png)
-
+### Easyjobs Manager - API
+![](./images/ETL_API.png)
+### Task Flow
+![](./images/task-flow.png)
 
 ## Registering Tasks
 Tasks can be registered on a Manager or Worker by using referencing the <instance>.task decorator / function. 
@@ -159,7 +198,8 @@ def task(
     namespace: str = 'DEFAULT',
     on_failure: Optional[str] = None, # on failure job
     retry_policy: Optional[str] =  'retry_once', # retry_once, retry_always, never
-    run_after: Optional[str] = None,
+    run_before: Optional[list] = None,
+    run_after: Optional[list] = None,
     subprocess: Optional[bool] = False,
     schedule: Optional[str] = None,
     default_args: Optional[dict] = None,
@@ -172,6 +212,7 @@ def task(
 - <b>namespace</b> - Manager only, Defaults to 'DEFAULT' - Determines what queue task is registered within, methods can be registered within multiple namespaces. Workers inherit jobs_queue, from creation. 
 - <b>on_failure</b>  - Default Unspecified - Will attempt to create with on_failure=<task_name> if task run resulted in a failure
 - <b>retry_policy</b>  - Defaults retry_policy='retry_once',  with possible values [retry_always, never]
+- <b>run_before</b> - List - Runs listed jobs in parelell before starting task.
 - <b>run_after</b>  - Defaults Unspecified - Will create job with run_after=<task_name> using results of current task as argument for run_afer task.
 - <b>subprocess</b>  - Defaults False - Defines whether a task should be created via a subprocess 
 - <b>schedule</b> - Default Unspecified - Define a cron schedule which the Job Manager will invoke the Task automatically
@@ -193,7 +234,7 @@ async def send_failure_email(reason):
 ```
 
 ```python
-@manager.task(namespace="general", run_after='more_general_work')
+@manager.task(namespace="general", run_after=['more_general_work'])
 async def general_work(general_data: dict):
     """
     do general work
@@ -309,13 +350,17 @@ When a Job is added ( either pulled from a broker, or pushed via producer) the j
 
 1. A Job may created if pulled from a Message Queue, OnDemand via the EasyJobsManager API, or by a schedule
 2. The Job is added to the jobs database and queued for worker consumtion. 
-3. A Job is selected by a worker and invoked with the provided args / kwargs parameters( if any ).
+3. A Job is selected by a worker. Any dependent Jobs listed in run_before are scheduled and must complete.
+4. After dependent jobs, Job is invoked with the provided args / kwargs parameters( if any ).
 4. Job Failures result in triggering a retry followed by any task on_failure tasks ( if any ), then reported as failed to EasyJobsManager's results database / queue.
 5. Job Successes result in creating any task run_after tasks using the results of the last job, then reporting the results to EasyJobsManager's results database / queue.
 6. Results are stored within the EasyJobsManager Database 
 
 ## Consuming Results
 When a job request is created via the API, a request_id is returned right-away.
+
+!!! Note
+    Results of run_before methods are consumed automatically.
 
 ![](./images/api_2.png)
 
