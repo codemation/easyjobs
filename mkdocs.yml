@@ -3,3 +3,12 @@ theme:
     name: readthedocs
 markdown_extensions:
   - admonition
+nav:
+  - Home: index.md
+  - Setup: setup.md
+  - Manager Usage: manager_usage.md
+  - Worker Usage: worker_usage.md
+  - Task Flow: tasks.md
+  - Jobs: jobs.md
+  - Terminology: terminology.md
+  - Contribute: contribute.md
