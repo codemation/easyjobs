@@ -24,6 +24,7 @@ class EasyJobsWorker:
 
         self.log = self.rpc_server.log
         self.workers = []
+        self.pause_workers = False
         self.MAX_TASKS_PER_WORKER = max_tasks_per_worker
 
         # queue of jobs to be sent to job_manager
@@ -447,12 +448,23 @@ class EasyJobsWorker:
                 self.log.exception(f"WORKER_MONITOR: error")
         self.log.warning(f"WORKER_MONITOR: exiting")
 
+    def toggle_workers(self, pause: bool):
+        """
+        Enables or disables workers ability to pull new jobs
+        ::pause = False 
+        """
+        self.log.warning(f"toggle_workers triggered - pause set to {pause}")
+        self.pause_workers = pause
+
 
     async def worker(self, queue):
         self.log.warning(f"worker started - for queue {queue}")
         worker_id = '_'.join(self.rpc_proxy.session_id.split('-'))
         while True:
             try:
+                if self.pause_workers:
+                    await asyncio.sleep(5)
+                    continue
                 job = await self.get_job_from_queue(queue)
                 await self.worker_status.put('working')
                 if not isinstance(job, dict):

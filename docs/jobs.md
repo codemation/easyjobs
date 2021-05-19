@@ -70,3 +70,75 @@ When a job request is created via the API, a request_id is returned right-away.
     will wait up to 5 seconds for a job to complete, returning the consumed result.
 !!! Danger
     Once a result is consumed via Pull Job Result, the results will no longer be visible.
+
+### Pausing Workers 
+
+Under certain circumstances it can be advantageous to prevent workers from pulling new jobs to run.
+- high worker utilization, or too many jobs running
+- draining a worker for maintenance 
+
+!!! TIP
+    Job processing for EasyJobsManagers or EasyJobsWorkers can be paused using <b>toggle_workers</b>
+
+
+```python
+EasyJobsManager.toggle_workers(pause=True|False)
+EasyJobsWorker.toggle_workers(pause=True|False)
+```
+
+
+#### Pausing Example
+
+```python
+import psutil
+from easyjobs.manager import EasyJobsManager
+from fastapi import FastAPI
+
+server = FastAPI()
+
+every_minute = '* * * * *'
+
+@server.on_event('startup')
+async def startup():
+
+    server.job_manager = await EasyJobsManager.create(
+        server,
+        server_secret='abcd1234'
+    )
+
+    @server.job_manager.task()
+    async def basic_task(a: str, b: int, c: float):
+        return {'results': [a, b, c]}
+    
+    scheduler = server.job_manager.scheduler
+
+    @scheduler(schedule=every_minute)
+    def monitor_utilization():
+        log = server.job_manager.log
+        
+        # check server usage 
+
+        # gives a single float value
+        high_mem  = False
+        high_cpu = False
+
+        mem = psutil.virtual_memory().percent
+        cpu = psutil.cpu_percent()
+
+        log.warning(f"monitor_utilization - cpu {cpu} - mem {mem}")
+        if psutil.virtual_memory().percent >= 35.0:
+            server.job_manager.toggle_workers(pause=True)
+            high_mem = True
+            
+        if psutil.cpu_percent() > 20.0:
+            server.job_manager.toggle_workers(pause=True)
+            high_cpu
+        
+        # finished for now 
+        if high_cpu or high_mem:
+            return
+
+        # resource are ok, unpause
+        else:
+            server.job_manager.toggle_workers(pause=False)
+```
