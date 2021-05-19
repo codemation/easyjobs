@@ -51,7 +51,7 @@ async def api_setup(manager):
         )
 
     @server.get('/job/view/running', tags=['Manager'])
-    async def view_queued_jobs(
+    async def view_running_jobs(
         namespace: Optional[str] = None, 
         name: Optional[str] = None,
         status: Optional[str] = None
