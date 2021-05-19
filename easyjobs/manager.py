@@ -77,6 +77,7 @@ class EasyJobsManager():
         self.scheduler = scheduler
 
         self.workers = []
+        self.pause_workers = False
         self.worker_instances = set()
         self.create_cron_task(
             self.refresh_worker_pool, 60
@@ -658,11 +659,21 @@ class EasyJobsManager():
         self.log.warning(f"job_sender exiting")
         return
 
+    def toggle_workers(self, pause: bool):
+        """
+        Enables or disables workers ability to pull new jobs
+        ::pause = False 
+        """
+        self.log.warning(f"toggle_workers triggered - pause set to {pause}")
+        self.pause_workers = pause
+
     async def worker(self, queue):
         self.log.warning(f"worker started")
         while True:
             try:
-                #job = await self.job_queues[queue].get()
+                if self.pause_workers:
+                    await asyncio.sleep(5)
+                    continue
                 job = await self.get_job_from_queue(queue)
                 job_id = job['job_id']
                 
