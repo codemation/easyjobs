@@ -325,14 +325,15 @@ class EasyJobsWorker:
         return await self.rpc_server['manager']['get_job_from_queue'](queue)
 
     """
-    async def get_job_from_queue(self, queue):
+    async def get_job_from_queue(self, queue, worker_id):
         request_id = str(uuid.uuid1())
         self.callback_results[request_id] = asyncio.Queue()
-        worker_id = '_'.join(self.rpc_proxy.session_id.split('-'))
         await self.rpc_server['manager']['create_get_job_from_queue_callback'](
             queue, request_id, worker_id
         )
-        return await self.callback(request_id)
+        job = await self.callback(request_id)
+        self.log.warning(f"worker {worker_id} - pulled job {job} ")
+        return job
     
     
     async def update_job_status(self, job_id: str, status: str, node_id: str = None):
@@ -434,8 +435,8 @@ class EasyJobsWorker:
                     self.workers_working+=1
                 if status == 'finished':
                     self.workers_working-=1
-                self.log.debug(f"WORKER_MONITOR: working {self.workers_working} / {self.MAX_TASKS_PER_WORKER}")
-                if self.workers_working >= self.MAX_TASKS_PER_WORKER:
+                self.log.warning(f"WORKER_MONITOR: working {self.workers_working} / {self.MAX_TASKS_PER_WORKER}")
+                if self.workers_working > self.MAX_TASKS_PER_WORKER:
                     self.log.warning(f"WORKER_MONITOR: detected max workers working, temporarily scaling by 1")
                     self.workers.append(
                         asyncio.create_task(
@@ -465,7 +466,7 @@ class EasyJobsWorker:
                 if self.pause_workers:
                     await asyncio.sleep(5)
                     continue
-                job = await self.get_job_from_queue(queue)
+                job = await self.get_job_from_queue(queue, worker_id)
                 await self.worker_status.put('working')
                 if not isinstance(job, dict):
                     if 'KeyError' in job and queue in job:
@@ -482,9 +483,9 @@ class EasyJobsWorker:
 
                 self.log.debug(f"worker pulled {job} from queue")
                 
-                if job['run_before']:
+                if job['run_before']['run_before']:
                     tasks = []
-                    for task in job['run_before']:
+                    for task in job['run_before']['run_before']:
                         run_after = self.get_local_worker_task(queue, task, 'job')
                         if not run_after is None:
                             before_job_id = await run_after()
@@ -541,17 +542,17 @@ class EasyJobsWorker:
                 # delete job 
                 await self.delete_job(job_id)
 
-                if job['run_after'] and not results == f'task {name} failed':
-                    for job_name in job['run_after']:
+                if job['run_after']['run_after'] and not results == f'task {name} failed':
+                    for job_name in job['run_after']['run_after']:
                         run_after = self.get_local_worker_task(queue, job_name, 'job')
                         if not run_after is None:
                             await run_after(**results)
                         else:
                             await self.run_job(queue, job_name, kwargs=results)
                 await self.worker_status.put('finished')
-                if self.workers_working >= self.MAX_TASKS_PER_WORKER:
+                if self.workers_working > self.MAX_TASKS_PER_WORKER:
                     self.log.warning(f"worker: exiting - max workers {self.MAX_TASKS_PER_WORKER} working / exceeded ")
-                    break      
+                    break
             except Exception as e:
                 if isinstance(e, asyncio.CancelledError):
                     break

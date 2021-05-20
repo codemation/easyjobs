@@ -118,7 +118,6 @@ class EasyJobsManager():
             debug=debug,
         )
         log = rpc_server.log
-
         log.debug(f"JOB_MANAGER SETUP: rpc_server created")
 
         db_path = 'job_manager.db' if not 'DB_PATH' in os.environ else f"{os.environ['DB_PATH']}/job_manager.db"
@@ -188,7 +187,7 @@ class EasyJobsManager():
                     job['kwargs'] = {}
                 for list_item in {'run_before', 'run_after'}:
                     if not job[list_item]:
-                        job[list_item] = {list_item: []}
+                        job[list_item] = None
                     else:
                         job[list_item] = {list_item: job[list_item]}
 
@@ -541,7 +540,10 @@ class EasyJobsManager():
 
     async def add_job_queue(self, queue: str):
         if not queue in self.job_queues:
-            self.job_queues[queue] = asyncio.Queue()
+            #distributor = self.job_queue_distributor(queue)
+            #await distributor.asend(None)
+            #self.job_queues[queue] = distributor
+            self.job_queues[queue] = 'working'
             await self.start_queue_workers(queue)
             #if self.broker_type and self.broker_type in self.BROKER_TYPES:
             await self.start_message_consumer(queue)
@@ -557,8 +559,13 @@ class EasyJobsManager():
         for job in jobs:
             queue = job['namespace']
             if not queue in self.job_queues:
+                await self.db.tables['jobs'].update(
+                    node_id=None,
+                    where={
+                        'status': 'queued'
+                    }
+                )
                 await self.add_job_queue(queue)
-            await self.job_queues[queue].put(job)
             self.job_results[job['job_id']] = asyncio.Queue()
         self.log.debug(f"JOB_MANAGER load_job_queues finished")
 
@@ -581,12 +588,52 @@ class EasyJobsManager():
     async def create_get_job_from_queue_callback(self, queue, request_id, worker_id):
         if not queue in self.job_queues:
             await self.add_job_queue(queue)
-        get_job_from_queue = self.get_job_from_queue(queue)
+        get_job_from_queue = self.get_job_from_queue(queue, worker_id, request_id)
         await self.create_callback(get_job_from_queue, request_id, worker_id)
         return f"get_job_from_queue callback"
 
-    async def get_job_from_queue(self, queue):
-        return await self.job_queues[queue].get()
+    async def get_job_from_queue(self, queue, worker_id, request_id):
+        while True:
+            try:
+                job = None
+                async for jb in self.job_queue_distributor(queue):
+                    if jb == 'empty':
+                        #self.log.warning(f"get_job_from_queue - {jb}")
+                        await asyncio.sleep(5)
+                        continue
+                    job=jb
+                    break
+
+                # reserve job 
+                await self.db.tables['jobs'].update(
+                    node_id=f"{worker_id}-REQ-{request_id}",
+                    status='pulled',
+                    where={
+                        'job_id': job['job_id'],
+                        'status': 'queued'
+                    }
+                )
+
+                # verify reservation
+                job = await self.db.tables['jobs'].select(
+                    '*', 
+                    where={'job_id': job['job_id']}
+                )
+
+                # return if reserved
+                if job[0]['node_id'] == f"{worker_id}-REQ-{request_id}":
+                    return job[0]
+                
+                # failed to reserve job
+                self.log.warning(f"failed to reserve job - {job}")
+                await asyncio.sleep(1)
+
+            except Exception as e:
+                if isinstance(e, asyncio.CancelledError):
+                    break
+                self.log.exception(f"get_job_from_queue - error")
+                #break
+
     async def get_job_from_queue_nowait(self, queue):
         try:
             return self.job_queues[queue].get_nowait()
@@ -674,7 +721,13 @@ class EasyJobsManager():
                 if self.pause_workers:
                     await asyncio.sleep(5)
                     continue
-                job = await self.get_job_from_queue(queue)
+                request_id = str(uuid.uuid1())
+                job = await self.get_job_from_queue(
+                    queue, 
+                    self.rpc_server.server_id,
+                    request_id
+                )
+                #breakpoint()
                 job_id = job['job_id']
                 
                 self.log.debug(f"worker pulled {job} from queue")
@@ -710,6 +763,7 @@ class EasyJobsManager():
                     break
 
                 if not results or results == f'task {name} failed':
+                    self.log.warning(f'task {name} failed')
                     results = f'task {name} failed'
                     if job['on_failure']: 
                         try:
@@ -735,8 +789,8 @@ class EasyJobsManager():
                 # delete job
                 await self.delete_job(job_id)
 
-                if job['run_after'] and not results == f'task {name} failed':
-                    for job_name in job['run_after']:
+                if job['run_after']['run_after'] and not results == f'task {name} failed':
+                    for job_name in job['run_after']['run_after']:
                         await self.run_job(queue, job_name, kwargs=results)
                 
             except Exception as e:
@@ -779,17 +833,62 @@ class EasyJobsManager():
         if not namespace in self.job_queues:
             await self.add_job_queue(namespace)
         
-        await self.job_queues[namespace].put(new_job)
+        # TODO - remove later moved this into job_proccessor
+        #await self.job_queues[namespace].put(new_job)
 
-        self.job_results[job_id] = asyncio.Queue()
+        
         return job_id
+    
+    async def job_monitor(self):
+        """
+        monitors jobs in db.tables['jobs'] table
+
+
+        """
+
+    async def job_queue_distributor(self, job_queue):
+        """
+        Generator
+
+        provides jobs from db.tables['jobs'] in a queued state
+            without an owner
+        """
+
+        while True:
+            try:
+                #self.log.warning(f"job_queue_distributor: checking")
+                queued = await self.db.tables['jobs'].select(
+                    '*', 
+                    where={
+                        'node_id': None, 
+                        'status': 'queued',
+                        'namespace': job_queue
+                    }
+                )
+                #breakpoint()
+                if len(queued) == 0:
+                    status = yield 'empty'
+                    if status == 'finished':
+                        raise asyncio.CancelledError(f"job_distributor finished")
+                    continue
+                for job in queued:
+                    status = yield job
+                    if status == 'finished':
+                        raise asyncio.CancelledError(f"job_distributor finished")
+
+            except Exception as e:
+                if isinstance(e, asyncio.CancelledError):
+                    break
+                #self.log.exception(f"job_distributor error")
+        self.log.warning(f"job_queue_distributor: exiting")
+
 
     async def add_job_results(self, job_id: str, results: dict):
         add_results = await self.db.tables['results'].insert(
             job_id=job_id,
             results=results
         )
-        await self.job_results[job_id].put(results)
+        #await self.job_results[job_id].put(results)
     async def get_job_result_by_request_id(self, request_id):
         start = time.time()
 
