@@ -1,5 +1,6 @@
 import asyncio
-import uuid, json, time, os, datetime
+import uuid, json, time, os
+from datetime import datetime
 import logging
 import random
 import subprocess as sp
@@ -10,6 +11,20 @@ from fastapi import FastAPI
 from aiopyql import data
 from easyjobs.api.manager_api import api_setup
 from easyschedule import EasyScheduler
+
+def get_datetime(datetime_str):
+    """
+    datetime_str:
+        if provided, returns a datetime object
+    """
+    return datetime.strptime(datetime_str, '%Y-%m-%dT%H:%M:%S')
+
+def get_current_datetime_str():
+    """
+    returns current date time in format:
+        '%Y-%m-%d %H:%M:%S'
+    """
+    return  datetime.now().isoformat()[:19]
 
 
 async def database_setup(job_manager, server, db):
@@ -37,7 +52,8 @@ async def database_setup(job_manager, server, db):
             ('retry_policy', str),
             ('on_failure', str),
             ('run_before', str),
-            ('run_after', str)
+            ('run_after', str),
+            ('last_update', str)
         ],
         'job_id',
         cache_enabled=True
@@ -255,7 +271,7 @@ class EasyJobsManager():
 
         @job_manager.task(namespace='job_manager')
         async def jobmanager_started():
-            message = f"JOB MANAGER started - {datetime.datetime.now().isoformat()}"
+            message = f"JOB MANAGER started - {get_current_datetime_str()}"
             job_manager.log.warning(message)
             return message
 
@@ -554,6 +570,9 @@ class EasyJobsManager():
         self.workers.append(
             asyncio.create_task(self.job_sender())
         )
+        self.workers.append(
+            asyncio.create_task(self.job_monitor())
+        )
 
         jobs = await self.db.tables['jobs'].select('*')
         for job in jobs:
@@ -561,6 +580,7 @@ class EasyJobsManager():
             if not queue in self.job_queues:
                 await self.db.tables['jobs'].update(
                     node_id=None,
+                    last_update=get_current_datetime_str(),
                     where={
                         'status': 'queued'
                     }
@@ -607,7 +627,8 @@ class EasyJobsManager():
                 # reserve job 
                 await self.db.tables['jobs'].update(
                     node_id=f"{worker_id}-REQ-{request_id}",
-                    status='pulled',
+                    status='reserved',
+                    last_update=get_current_datetime_str(),
                     where={
                         'job_id': job['job_id'],
                         'status': 'queued'
@@ -625,7 +646,7 @@ class EasyJobsManager():
                     return job[0]
                 
                 # failed to reserve job
-                self.log.warning(f"failed to reserve job - {job}")
+                self.log.debug(f"failed to reserve job - {job}")
                 await asyncio.sleep(1)
 
             except Exception as e:
@@ -643,6 +664,7 @@ class EasyJobsManager():
     async def update_job_status(self, job_id: str, status: str, node_id: str = None):
         await self.db.tables['jobs'].update(
             status=status,
+            last_update=get_current_datetime_str(),
             node_id=node_id,
             where={'job_id': job_id}
         )
@@ -769,7 +791,9 @@ class EasyJobsManager():
                         try:
                             await self.run_job(queue, job['on_failure'], kwargs={'job_failed': results})
                         except Exception as e:
-                            self.log.exception(f"error running on_failure task {job['on_failure']} triggered by {name} failure")
+                            self.log.exception(
+                                f"error running on_failure task {job['on_failure']} triggered by {name} failure"
+                            )
 
                     if job['retry_policy'] == 'retry_always':
                         await self.update_job_status(
@@ -826,6 +850,7 @@ class EasyJobsManager():
 
         await self.db.tables['jobs'].insert(
             status='queued',
+            last_update=get_current_datetime_str(),
             **job
         )
         namespace = new_job['namespace']
@@ -838,13 +863,46 @@ class EasyJobsManager():
 
         
         return job_id
+    async def requeue_job(self, job: str, reason: str = None):
+        self.log.warning(f"re-queueing job {job['name']} reason: {reason}")
+        await self.db.tables['jobs'].update(
+            status='queued',
+            last_update=get_current_datetime_str(),
+            where={
+                'job_id': job['job_id']
+            }
+        )
     
     async def job_monitor(self):
         """
+        Loop
         monitors jobs in db.tables['jobs'] table
-
-
+        Rules: 
+            - reserved > 1 minute - re-queue
+            - running  > 60 minutes
         """
+        self.log.warning(f"job_monitor: starting")
+        while True:
+            try:
+                jobs = await self.db.tables['jobs'].select('*')
+                for job in jobs:
+                    time_now = datetime.now()
+                    last_update = get_datetime(job['last_update'])
+                    if job['status'] == 'reserved': 
+                        if (time_now - last_update).seconds > 60:
+                            self.requeue_job(job, reason=f"job waiting on reserved too long")
+                    if job['status'] == 'running': 
+                        if (time_now - last_update).seconds > 3600:
+                            self.requeue_job(job, reason=f"job running too long")
+                    
+                    await asyncio.sleep(2)
+                await asyncio.sleep(60)
+            except Exception as e:
+                if not isinstance(e, asyncio.CancelledError):
+                    self.log.exception(f"job_monitor error")
+                    continue
+                # canceled
+                break
 
     async def job_queue_distributor(self, job_queue):
         """
@@ -860,12 +918,11 @@ class EasyJobsManager():
                 queued = await self.db.tables['jobs'].select(
                     '*', 
                     where={
-                        'node_id': None, 
                         'status': 'queued',
                         'namespace': job_queue
                     }
                 )
-                #breakpoint()
+
                 if len(queued) == 0:
                     status = yield 'empty'
                     if status == 'finished':
@@ -945,7 +1002,10 @@ class EasyJobsManager():
                 await self.rpc_server['manager'][f'add_callback_results_{worker_id}'](request_id, results)
             except Exception as e:
                 if not isinstance(e, asyncio.CancelledError):
-                    self.log.exception(f"error with callback for request_id: {request_id}")
+                    if not isinstance(e, KeyError):
+                        self.log.exception(f"error with callback for request_id: {request_id}")
+                    else:
+                        self.log.error(f"Detected worker with id {worker_id} disconnected")
 
         if not worker_id in self.worker_callbacks:
             self.worker_callbacks[worker_id] = []
