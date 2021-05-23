@@ -2,7 +2,7 @@ name: Package
 on:
   push:
     branches:
-      - master
+      - main
 jobs:
   package:
     name: Package Easy Jobs PyPI
