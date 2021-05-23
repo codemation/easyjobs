@@ -653,7 +653,6 @@ class EasyJobsManager():
                 if isinstance(e, asyncio.CancelledError):
                     break
                 self.log.exception(f"get_job_from_queue - error")
-                #break
 
     async def get_job_from_queue_nowait(self, queue):
         try:
@@ -749,7 +748,7 @@ class EasyJobsManager():
                     self.rpc_server.server_id,
                     request_id
                 )
-                #breakpoint()
+
                 job_id = job['job_id']
                 
                 self.log.debug(f"worker pulled {job} from queue")
@@ -857,11 +856,7 @@ class EasyJobsManager():
 
         if not namespace in self.job_queues:
             await self.add_job_queue(namespace)
-        
-        # TODO - remove later moved this into job_proccessor
-        #await self.job_queues[namespace].put(new_job)
-
-        
+    
         return job_id
     async def requeue_job(self, job: str, reason: str = None):
         self.log.warning(f"re-queueing job {job['name']} reason: {reason}")
